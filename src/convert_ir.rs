@@ -6,6 +6,7 @@ use array_try_map::ArrayExt;
 use phf::phf_map;
 use pyo3::{
     exceptions::PyValueError,
+    intern,
     prelude::*,
     types::{PyFunction, PyString, PyType},
 };
@@ -278,6 +279,8 @@ pub struct Block {
 
 #[allow(non_snake_case)]
 pub struct IrConverter<'a> {
+    py: Python<'a>,
+
     tag_to_stmt_class: &'a PyFunction,
     stmt_type_NoOp: &'a PyType,
     stmt_type_IMark: &'a PyType,
@@ -323,6 +326,8 @@ pub struct IrConverter<'a> {
 
 impl<'a> IrConverter<'a> {
     pub fn new(pyvex: &'a PyModule) -> PyResult<Self> {
+        let py = pyvex.py();
+
         let pyvex_stmt = pyvex.getattr("stmt")?;
         let tag_to_stmt_class: &PyFunction = pyvex_stmt.getattr("tag_to_stmt_class")?.cast_as()?;
 
@@ -334,6 +339,7 @@ impl<'a> IrConverter<'a> {
             pyvex_const.getattr("tag_to_const_class")?.cast_as()?;
 
         Ok(Self {
+            py,
             tag_to_stmt_class,
             stmt_type_NoOp: pyvex_stmt.getattr("NoOp")?.cast_as()?,
             stmt_type_IMark: pyvex_stmt.getattr("IMark")?.cast_as()?,
@@ -381,46 +387,46 @@ impl<'a> IrConverter<'a> {
     pub fn convert_block(&self, block: &PyAny) -> PyResult<Block> {
         Ok(Block {
             statements: block
-                .getattr("statements")?
+                .getattr(intern!(self.py, "statements"))?
                 .iter()?
                 .map(|stmt| self.convert_stmt(stmt?))
                 .collect::<PyResult<Vec<_>>>()?,
-            next: self.convert_expr(block.getattr("next")?)?,
-            jump_kind: block.getattr("jumpkind")?.extract()?,
+            next: self.convert_expr(block.getattr(intern!(self.py, "next"))?)?,
+            jump_kind: block.getattr(intern!(self.py, "jumpkind"))?.extract()?,
         })
     }
 
     pub fn convert_stmt(&self, stmt: &PyAny) -> PyResult<Statement> {
-        let tag = stmt.getattr("tag")?;
+        let tag = stmt.getattr(intern!(self.py, "tag"))?;
         let stmt_class = self.tag_to_stmt_class.call1((tag,))?;
 
         let stmt = if stmt_class.is(self.stmt_type_NoOp) {
             Statement::NoOp
         } else if stmt_class.is(self.stmt_type_IMark) {
             Statement::IMark {
-                addr: stmt.getattr("addr")?.extract()?,
-                len: stmt.getattr("len")?.extract()?,
-                delta: stmt.getattr("delta")?.extract()?,
+                addr: stmt.getattr(intern!(self.py, "addr"))?.extract()?,
+                len: stmt.getattr(intern!(self.py, "len"))?.extract()?,
+                delta: stmt.getattr(intern!(self.py, "delta"))?.extract()?,
             }
         } else if stmt_class.is(self.stmt_type_abihint) {
             Statement::AbiHint
         } else if stmt_class.is(self.stmt_type_put) {
             Statement::Put {
-                offset: stmt.getattr("offset")?.extract()?,
-                data: self.convert_expr(stmt.getattr("data")?)?,
+                offset: stmt.getattr(intern!(self.py, "offset"))?.extract()?,
+                data: self.convert_expr(stmt.getattr(intern!(self.py, "data"))?)?,
             }
         } else if stmt_class.is(self.stmt_type_puti) {
             Statement::PutI
         } else if stmt_class.is(self.stmt_type_wrtmp) {
             Statement::WrTmp {
-                tmp: stmt.getattr("tmp")?.extract()?,
-                data: self.convert_expr(stmt.getattr("data")?)?,
+                tmp: stmt.getattr(intern!(self.py, "tmp"))?.extract()?,
+                data: self.convert_expr(stmt.getattr(intern!(self.py, "data"))?)?,
             }
         } else if stmt_class.is(self.stmt_type_store) {
             Statement::Store {
-                endianness: stmt.getattr("end")?.extract()?,
-                addr: self.convert_expr(stmt.getattr("addr")?)?,
-                data: self.convert_expr(stmt.getattr("data")?)?,
+                endianness: stmt.getattr(intern!(self.py, "end"))?.extract()?,
+                addr: self.convert_expr(stmt.getattr(intern!(self.py, "addr"))?)?,
+                data: self.convert_expr(stmt.getattr(intern!(self.py, "data"))?)?,
             }
         } else if stmt_class.is(self.stmt_type_cas) {
             Statement::CAS
@@ -432,10 +438,10 @@ impl<'a> IrConverter<'a> {
             Statement::Dirty
         } else if stmt_class.is(self.stmt_type_exit) {
             Statement::Exit {
-                guard: self.convert_expr(stmt.getattr("guard")?)?,
-                dst: self.convert_const(stmt.getattr("dst")?)?,
-                jump_kind: stmt.getattr("jk")?.extract()?,
-                offset_ip: stmt.getattr("offsIP")?.extract()?,
+                guard: self.convert_expr(stmt.getattr(intern!(self.py, "guard"))?)?,
+                dst: self.convert_const(stmt.getattr(intern!(self.py, "dst"))?)?,
+                jump_kind: stmt.getattr(intern!(self.py, "jk"))?.extract()?,
+                offset_ip: stmt.getattr(intern!(self.py, "offsIP"))?.extract()?,
             }
         } else if stmt_class.is(self.stmt_type_loadg) {
             Statement::LoadG
@@ -452,25 +458,25 @@ impl<'a> IrConverter<'a> {
         &self,
         expr: &'b PyAny,
     ) -> PyResult<(Op, [Box<Expr>; N])> {
-        let op = expr.getattr("op")?.extract()?;
-        let args: [&PyAny; N] = expr.getattr("args")?.extract()?;
+        let op = expr.getattr(intern!(self.py, "op"))?.extract()?;
+        let args: [&PyAny; N] = expr.getattr(intern!(self.py, "args"))?.extract()?;
         let args = ArrayExt::try_map(args, |arg| self.convert_expr(arg).map(Box::new))?;
         Ok((op, args))
     }
 
     pub fn convert_expr(&self, expr: &PyAny) -> PyResult<Expr> {
-        let tag = expr.getattr("tag")?;
+        let tag = expr.getattr(intern!(self.py, "tag"))?;
         let expr_class = self.tag_to_expr_class.call1((tag,))?;
 
         let expr = if expr_class.is(self.expr_type_Get) {
             Expr::Get {
-                offset: expr.getattr("offset")?.extract()?,
-                ty: expr.getattr("ty")?.extract()?,
+                offset: expr.getattr(intern!(self.py, "offset"))?.extract()?,
+                ty: expr.getattr(intern!(self.py, "ty"))?.extract()?,
             }
         } else if expr_class.is(self.expr_type_GetI) {
             Expr::GetI {}
         } else if expr_class.is(self.expr_type_RdTmp) {
-            Expr::RdTmp(expr.getattr("tmp")?.extract()?)
+            Expr::RdTmp(expr.getattr(intern!(self.py, "tmp"))?.extract()?)
         } else if expr_class.is(self.expr_type_Qop) {
             let (op, args) = self.convert_op_and_args(expr)?;
             Expr::Op4 { op, args }
@@ -486,27 +492,29 @@ impl<'a> IrConverter<'a> {
             Expr::Op1 { op, arg }
         } else if expr_class.is(self.expr_type_Load) {
             Expr::Load {
-                endianness: expr.getattr("end")?.extract()?,
-                ty: expr.getattr("ty")?.extract()?,
-                addr: Box::new(self.convert_expr(expr.getattr("addr")?)?),
+                endianness: expr.getattr(intern!(self.py, "end"))?.extract()?,
+                ty: expr.getattr(intern!(self.py, "ty"))?.extract()?,
+                addr: Box::new(self.convert_expr(expr.getattr(intern!(self.py, "addr"))?)?),
             }
         } else if expr_class.is(self.expr_type_Const) {
-            Expr::Const(self.convert_const(expr.getattr("con")?)?)
+            Expr::Const(self.convert_const(expr.getattr(intern!(self.py, "con"))?)?)
         } else if expr_class.is(self.expr_type_CCall) {
             Expr::CCall {
                 func: (),
-                return_ty: expr.getattr("retty")?.extract()?,
+                return_ty: expr.getattr(intern!(self.py, "retty"))?.extract()?,
                 args: expr
-                    .getattr("args")?
+                    .getattr(intern!(self.py, "args"))?
                     .iter()?
                     .map(|arg| self.convert_expr(arg?))
                     .collect::<PyResult<Vec<Expr>>>()?,
             }
         } else if expr_class.is(self.expr_type_ITE) {
             Expr::Ite {
-                condition: Box::new(self.convert_expr(expr.getattr("cond")?)?),
-                true_value: Box::new(self.convert_expr(expr.getattr("iftrue")?)?),
-                false_value: Box::new(self.convert_expr(expr.getattr("iffalse")?)?),
+                condition: Box::new(self.convert_expr(expr.getattr(intern!(self.py, "cond"))?)?),
+                true_value: Box::new(self.convert_expr(expr.getattr(intern!(self.py, "iftrue"))?)?),
+                false_value: Box::new(
+                    self.convert_expr(expr.getattr(intern!(self.py, "iffalse"))?)?,
+                ),
             }
         } else {
             unimplemented!("unknown expression type for {:?}", expr);
@@ -516,10 +524,10 @@ impl<'a> IrConverter<'a> {
     }
 
     pub fn convert_const(&self, value: &PyAny) -> PyResult<Const> {
-        let tag = value.getattr("tag")?;
+        let tag = value.getattr(intern!(self.py, "tag"))?;
         let const_class = self.tag_to_const_class.call1((tag,))?;
 
-        let inner = value.getattr("value")?;
+        let inner = value.getattr(intern!(self.py, "value"))?;
         let value = if const_class.is(self.const_type_U1) {
             Const::U1(inner.extract()?)
         } else if const_class.is(self.const_type_U8) {
