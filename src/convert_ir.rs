@@ -1,5 +1,7 @@
 mod ops;
 
+use std::any::type_name;
+
 use array_try_map::ArrayExt;
 use phf::phf_map;
 use pyo3::{
@@ -15,11 +17,7 @@ pub type IRTemp = u32;
 
 type PhfStringMap<T> = phf::Map<&'static str, T>;
 
-fn py_string_to_enum<T: Copy>(
-    map: &PhfStringMap<T>,
-    string: &PyAny,
-    error_message: &'static str,
-) -> PyResult<T> {
+fn py_string_to_enum<T: Copy>(map: &PhfStringMap<T>, string: &PyAny) -> PyResult<T> {
     string
         .cast_as::<PyString>()
         .ok()
@@ -27,7 +25,9 @@ fn py_string_to_enum<T: Copy>(
             let s = s.to_str().ok()?;
             map.get(s).copied()
         })
-        .ok_or_else(|| PyValueError::new_err(error_message))
+        .ok_or_else(|| {
+            PyValueError::new_err(format!("Bad {} string {:?}", type_name::<T>(), string))
+        })
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -69,7 +69,7 @@ const IR_TYPES: PhfStringMap<IRType> = phf_map! {
 
 impl<'source> FromPyObject<'source> for IRType {
     fn extract(ob: &'source PyAny) -> PyResult<Self> {
-        py_string_to_enum(&IR_TYPES, ob, "Bad IR type string")
+        py_string_to_enum(&IR_TYPES, ob)
     }
 }
 
@@ -161,7 +161,7 @@ const JUMP_KINDS: PhfStringMap<JumpKind> = phf_map! {
 
 impl<'source> FromPyObject<'source> for JumpKind {
     fn extract(ob: &'source PyAny) -> PyResult<Self> {
-        py_string_to_enum(&JUMP_KINDS, ob, "Bad jump kind string")
+        py_string_to_enum(&JUMP_KINDS, ob)
     }
 }
 
@@ -178,7 +178,7 @@ const ENDIANNESSES: PhfStringMap<Endianness> = phf_map! {
 
 impl<'source> FromPyObject<'source> for Endianness {
     fn extract(ob: &'source PyAny) -> PyResult<Self> {
-        py_string_to_enum(&ENDIANNESSES, ob, "Bad endianness string")
+        py_string_to_enum(&ENDIANNESSES, ob)
     }
 }
 

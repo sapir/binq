@@ -23,11 +23,7 @@ macro_rules! op_enum {
 
         impl<'source> FromPyObject<'source> for $enum_name {
             fn extract(ob: &'source PyAny) -> PyResult<Self> {
-                py_string_to_enum(
-                    &$const_name,
-                    ob,
-                    concat!("Bad ", stringify!($enum_name), " name"),
-                )
+                py_string_to_enum(&$const_name, ob)
             }
         }
     };
