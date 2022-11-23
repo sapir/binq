@@ -3,6 +3,12 @@
 version = 3
 
 [[package]]
+name = "array_try_map"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7457a6779126021d707da7c806b8846d0492872d29a0e855e5c1210c6dd9452b"
+
+[[package]]
 name = "autocfg"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12,6 +18,7 @@ checksum = "d468802bab17cbc0cc575e9b053f41e72aa36bfa6b7f55e3529ffa43161b97fa"
 name = "binq"
 version = "0.1.0"
 dependencies = [
+ "array_try_map",
  "pyo3",
 ]
 

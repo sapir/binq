@@ -6,4 +6,5 @@ edition = "2021"
 [features]
 
 [dependencies]
+array_try_map = "0.1.0"
 pyo3 = { version = "0.17.3", default-features = false }

@@ -1,3 +1,4 @@
+use array_try_map::ArrayExt;
 use pyo3::{
     exceptions::PyValueError,
     prelude::*,
@@ -65,6 +66,15 @@ pub enum Const {
 }
 
 #[derive(Debug)]
+pub struct Op(pub String);
+
+impl<'source> FromPyObject<'source> for Op {
+    fn extract(ob: &'source PyAny) -> PyResult<Self> {
+        ob.extract().map(Self)
+    }
+}
+
+#[derive(Debug)]
 pub enum Expr {
     Get {
         offset: i32,
@@ -73,10 +83,22 @@ pub enum Expr {
     // TODO
     GetI {},
     RdTmp(IRTemp),
-    Op1(Box<Expr>),
-    Op2(Box<Expr>, Box<Expr>),
-    Op3(Box<Expr>, Box<Expr>, Box<Expr>),
-    Op4(Box<Expr>, Box<Expr>, Box<Expr>, Box<Expr>),
+    Op1 {
+        op: Op,
+        arg: Box<Expr>,
+    },
+    Op2 {
+        op: Op,
+        args: [Box<Expr>; 2],
+    },
+    Op3 {
+        op: Op,
+        args: [Box<Expr>; 3],
+    },
+    Op4 {
+        op: Op,
+        args: [Box<Expr>; 4],
+    },
     Load {
         endianness: Endianness,
         ty: IRType,
@@ -371,6 +393,13 @@ impl<'a> IrConverter<'a> {
         Ok(stmt)
     }
 
+    fn convert_op_and_args<const N: usize>(&self, expr: &PyAny) -> PyResult<(Op, [Box<Expr>; N])> {
+        let op = expr.getattr("op")?.extract()?;
+        let args: [&PyAny; N] = expr.getattr("args")?.extract()?;
+        let args = ArrayExt::try_map(args, |arg| self.convert_expr(arg).map(Box::new))?;
+        Ok((op, args))
+    }
+
     pub fn convert_expr(&self, expr: &PyAny) -> PyResult<Expr> {
         let tag = expr.getattr("tag")?;
         let expr_class = self.tag_to_expr_class.call1((tag,))?;
@@ -385,27 +414,18 @@ impl<'a> IrConverter<'a> {
         } else if expr_class.is(self.expr_type_RdTmp) {
             Expr::RdTmp(expr.getattr("tmp")?.extract()?)
         } else if expr_class.is(self.expr_type_Qop) {
-            let [a, b, c, d]: [&PyAny; 4] = expr.getattr("args")?.extract()?;
-            let a = Box::new(self.convert_expr(a)?);
-            let b = Box::new(self.convert_expr(b)?);
-            let c = Box::new(self.convert_expr(c)?);
-            let d = Box::new(self.convert_expr(d)?);
-            Expr::Op4(a, b, c, d)
+            let (op, args) = self.convert_op_and_args(expr)?;
+            Expr::Op4 { op, args }
         } else if expr_class.is(self.expr_type_Triop) {
-            let [a, b, c]: [&PyAny; 3] = expr.getattr("args")?.extract()?;
-            let a = Box::new(self.convert_expr(a)?);
-            let b = Box::new(self.convert_expr(b)?);
-            let c = Box::new(self.convert_expr(c)?);
-            Expr::Op3(a, b, c)
+            let (op, args) = self.convert_op_and_args(expr)?;
+            Expr::Op3 { op, args }
         } else if expr_class.is(self.expr_type_Binop) {
-            let [a, b]: [&PyAny; 2] = expr.getattr("args")?.extract()?;
-            let a = Box::new(self.convert_expr(a)?);
-            let b = Box::new(self.convert_expr(b)?);
-            Expr::Op2(a, b)
+            let (op, args) = self.convert_op_and_args(expr)?;
+            Expr::Op2 { op, args }
         } else if expr_class.is(self.expr_type_Unop) {
-            let [arg]: [&PyAny; 1] = expr.getattr("args")?.extract()?;
-            let arg = Box::new(self.convert_expr(arg)?);
-            Expr::Op1(arg)
+            let (op, args) = self.convert_op_and_args(expr)?;
+            let [arg] = args;
+            Expr::Op1 { op, arg }
         } else if expr_class.is(self.expr_type_Load) {
             Expr::Load {
                 endianness: expr.getattr("end")?.extract()?,
