@@ -495,7 +495,7 @@ impl<'a> IrConverter<'a> {
         } else if expr_class.is(self.expr_type_CCall) {
             Expr::CCall {
                 func: (),
-                return_ty: expr.getattr("return_ty")?.extract()?,
+                return_ty: expr.getattr("retty")?.extract()?,
                 args: expr
                     .getattr("args")?
                     .iter()?
