@@ -82,9 +82,7 @@ pub enum Const {
     U32(u32),
     U64(u64),
     F32(f32),
-    F32i(u32),
     F64(f64),
-    F64i(u64),
     V128(u16),
     V256(u32),
 }
@@ -538,14 +536,12 @@ impl<'a> IrConverter<'a> {
             Const::U32(inner.extract()?)
         } else if const_class.is(self.const_type_U64) {
             Const::U64(inner.extract()?)
-        } else if const_class.is(self.const_type_F32) {
+
+            // pyvex gives us floating point values for F32i and F64i
+        } else if const_class.is(self.const_type_F32) || const_class.is(self.const_type_F32i) {
             Const::F32(inner.extract()?)
-        } else if const_class.is(self.const_type_F32i) {
-            Const::F32i(inner.extract()?)
-        } else if const_class.is(self.const_type_F64) {
+        } else if const_class.is(self.const_type_F64) || const_class.is(self.const_type_F64i) {
             Const::F64(inner.extract()?)
-        } else if const_class.is(self.const_type_F64i) {
-            Const::F64i(inner.extract()?)
         } else if const_class.is(self.const_type_V128) {
             Const::V128(inner.extract()?)
         } else if const_class.is(self.const_type_V256) {
