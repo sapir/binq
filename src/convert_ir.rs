@@ -1,3 +1,5 @@
+mod ops;
+
 use array_try_map::ArrayExt;
 use phf::phf_map;
 use pyo3::{
@@ -5,6 +7,8 @@ use pyo3::{
     prelude::*,
     types::{PyFunction, PyString, PyType},
 };
+
+pub use self::ops::{Op1, Op2, Op3};
 
 pub type Addr64 = u64;
 pub type IRTemp = u32;
@@ -85,15 +89,6 @@ pub enum Const {
 }
 
 #[derive(Debug)]
-pub struct Op(pub String);
-
-impl<'source> FromPyObject<'source> for Op {
-    fn extract(ob: &'source PyAny) -> PyResult<Self> {
-        ob.extract().map(Self)
-    }
-}
-
-#[derive(Debug)]
 pub enum Expr {
     Get {
         offset: i32,
@@ -103,19 +98,19 @@ pub enum Expr {
     GetI {},
     RdTmp(IRTemp),
     Op1 {
-        op: Op,
+        op: Op1,
         arg: Box<Expr>,
     },
     Op2 {
-        op: Op,
+        op: Op2,
         args: [Box<Expr>; 2],
     },
     Op3 {
-        op: Op,
+        op: Op3,
         args: [Box<Expr>; 3],
     },
     Op4 {
-        op: Op,
+        op: String,
         args: [Box<Expr>; 4],
     },
     Load {
@@ -414,7 +409,10 @@ impl<'a> IrConverter<'a> {
         Ok(stmt)
     }
 
-    fn convert_op_and_args<const N: usize>(&self, expr: &PyAny) -> PyResult<(Op, [Box<Expr>; N])> {
+    fn convert_op_and_args<'b, Op: FromPyObject<'b>, const N: usize>(
+        &self,
+        expr: &'b PyAny,
+    ) -> PyResult<(Op, [Box<Expr>; N])> {
         let op = expr.getattr("op")?.extract()?;
         let args: [&PyAny; N] = expr.getattr("args")?.extract()?;
         let args = ArrayExt::try_map(args, |arg| self.convert_expr(arg).map(Box::new))?;
