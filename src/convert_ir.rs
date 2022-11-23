@@ -1,4 +1,5 @@
 use array_try_map::ArrayExt;
+use phf::phf_map;
 use pyo3::{
     exceptions::PyValueError,
     prelude::*,
@@ -8,7 +9,24 @@ use pyo3::{
 pub type Addr64 = u64;
 pub type IRTemp = u32;
 
-#[derive(Debug)]
+type PhfStringMap<T> = phf::Map<&'static str, T>;
+
+fn py_string_to_enum<T: Copy>(
+    map: &PhfStringMap<T>,
+    string: &PyAny,
+    error_message: &'static str,
+) -> PyResult<T> {
+    string
+        .cast_as::<PyString>()
+        .ok()
+        .and_then(|s| {
+            let s = s.to_str().ok()?;
+            map.get(s).copied()
+        })
+        .ok_or_else(|| PyValueError::new_err(error_message))
+}
+
+#[derive(Clone, Copy, Debug)]
 pub enum IRType {
     I1,
     I8,
@@ -27,26 +45,27 @@ pub enum IRType {
     V256,
 }
 
+const IR_TYPES: PhfStringMap<IRType> = phf_map! {
+    "Ity_I1" => IRType::I1,
+    "Ity_I8" => IRType::I8,
+    "Ity_I16" => IRType::I16,
+    "Ity_I32" => IRType::I32,
+    "Ity_I64" => IRType::I64,
+    "Ity_I128" => IRType::I128,
+    "Ity_F16" => IRType::F16,
+    "Ity_F32" => IRType::F32,
+    "Ity_F64" => IRType::F64,
+    "Ity_D32" => IRType::D32,
+    "Ity_D64" => IRType::D64,
+    "Ity_D128" => IRType::D128,
+    "Ity_F128" => IRType::F128,
+    "Ity_V128" => IRType::V128,
+    "Ity_V256" => IRType::V256,
+};
+
 impl<'source> FromPyObject<'source> for IRType {
     fn extract(ob: &'source PyAny) -> PyResult<Self> {
-        match ob.cast_as::<PyString>().ok().and_then(|s| s.to_str().ok()) {
-            Some("Ity_I1") => Ok(IRType::I1),
-            Some("Ity_I8") => Ok(IRType::I8),
-            Some("Ity_I16") => Ok(IRType::I16),
-            Some("Ity_I32") => Ok(IRType::I32),
-            Some("Ity_I64") => Ok(IRType::I64),
-            Some("Ity_I128") => Ok(IRType::I128),
-            Some("Ity_F16") => Ok(IRType::F16),
-            Some("Ity_F32") => Ok(IRType::F32),
-            Some("Ity_F64") => Ok(IRType::F64),
-            Some("Ity_D32") => Ok(IRType::D32),
-            Some("Ity_D64") => Ok(IRType::D64),
-            Some("Ity_D128") => Ok(IRType::D128),
-            Some("Ity_F128") => Ok(IRType::F128),
-            Some("Ity_V128") => Ok(IRType::V128),
-            Some("Ity_V256") => Ok(IRType::V256),
-            _ => Err(PyValueError::new_err("Bad IR type string")),
-        }
+        py_string_to_enum(&IR_TYPES, ob, "Bad IR type string")
     }
 }
 
@@ -120,7 +139,7 @@ pub enum Expr {
     },
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum JumpKind {
     Boring,
     Call,
@@ -133,36 +152,38 @@ pub enum JumpKind {
     NoDecode,
 }
 
+const JUMP_KINDS: PhfStringMap<JumpKind> = phf_map! {
+    "Ijk_Boring" => JumpKind::Boring,
+    "Ijk_Call" => JumpKind::Call,
+    "Ijk_Ret" => JumpKind::Ret,
+    "Ijk_SigSEGV" => JumpKind::Segfault,
+    "Ijk_Exit" => JumpKind::Exit,
+    "Ijk_Sys_syscall" => JumpKind::Syscall,
+    "Ijk_Sys_sysenter" => JumpKind::Sysenter,
+    "Ijk_INVALID" => JumpKind::Invalid,
+    "Ijk_NoDecode" => JumpKind::NoDecode,
+};
+
 impl<'source> FromPyObject<'source> for JumpKind {
     fn extract(ob: &'source PyAny) -> PyResult<Self> {
-        match ob.cast_as::<PyString>().ok().and_then(|s| s.to_str().ok()) {
-            Some("Ijk_Boring") => Ok(JumpKind::Boring),
-            Some("Ijk_Call") => Ok(JumpKind::Call),
-            Some("Ijk_Ret") => Ok(JumpKind::Ret),
-            Some("Ijk_SigSEGV") => Ok(JumpKind::Segfault),
-            Some("Ijk_Exit") => Ok(JumpKind::Exit),
-            Some("Ijk_Sys_syscall") => Ok(JumpKind::Syscall),
-            Some("Ijk_Sys_sysenter") => Ok(JumpKind::Sysenter),
-            Some("Ijk_INVALID") => Ok(JumpKind::Invalid),
-            Some("Ijk_NoDecode") => Ok(JumpKind::NoDecode),
-            _ => Err(PyValueError::new_err("Bad jump kind string")),
-        }
+        py_string_to_enum(&JUMP_KINDS, ob, "Bad jump kind string")
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum Endianness {
     Little,
     Big,
 }
 
+const ENDIANNESSES: PhfStringMap<Endianness> = phf_map! {
+    "Iend_LE" => Endianness::Little,
+    "Iend_BE" => Endianness::Big,
+};
+
 impl<'source> FromPyObject<'source> for Endianness {
     fn extract(ob: &'source PyAny) -> PyResult<Self> {
-        match ob.cast_as::<PyString>().ok().and_then(|s| s.to_str().ok()) {
-            Some("Iend_LE") => Ok(Endianness::Little),
-            Some("Iend_BE") => Ok(Endianness::Big),
-            _ => Err(PyValueError::new_err("Bad endianness string")),
-        }
+        py_string_to_enum(&ENDIANNESSES, ob, "Bad endianness string")
     }
 }
 
