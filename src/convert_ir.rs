@@ -267,13 +267,19 @@ pub enum Statement {
     // TODO
     /// Conditional ("guarded") store
     StoreG,
+    /// Fake statement, non-existent in the original IR, representing the
+    /// Block's `next`
+    EndOfBlock {
+        next: Expr,
+        jump_kind: JumpKind,
+    },
 }
 
 #[derive(Debug)]
 pub struct Block {
-    statements: Vec<Statement>,
-    next: Expr,
-    jump_kind: JumpKind,
+    pub statements: Vec<Statement>,
+    pub next: Expr,
+    pub jump_kind: JumpKind,
 }
 
 #[allow(non_snake_case)]
