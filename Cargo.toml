@@ -3,8 +3,14 @@ name = "binq"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+crate-type = ["cdylib"]
+
 [features]
 
 [dependencies]
 phf = { version = "0.11.1", features = ["macros"] }
-pyo3 = { version = "0.17.3", default-features = false }
+pyo3 = { version = "0.17.3", features=[
+    "auto-initialize",
+    "extension-module",
+] }
