@@ -1,3 +1,4 @@
+mod array_try_map;
 mod convert_ir;
 
 use pyo3::prelude::*;

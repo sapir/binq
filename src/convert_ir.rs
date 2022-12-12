@@ -2,7 +2,6 @@ mod ops;
 
 use std::any::type_name;
 
-use array_try_map::ArrayExt;
 use phf::phf_map;
 use pyo3::{
     exceptions::PyValueError,
@@ -10,6 +9,8 @@ use pyo3::{
     prelude::*,
     types::{PyFunction, PyString, PyType},
 };
+
+use crate::array_try_map::ArrayTryMap;
 
 pub use self::ops::{Op1, Op2, Op3};
 
@@ -458,7 +459,7 @@ impl<'a> IrConverter<'a> {
     ) -> PyResult<(Op, [Box<Expr>; N])> {
         let op = expr.getattr(intern!(self.py, "op"))?.extract()?;
         let args: [&PyAny; N] = expr.getattr(intern!(self.py, "args"))?.extract()?;
-        let args = ArrayExt::try_map(args, |arg| self.convert_expr(arg).map(Box::new))?;
+        let args = ArrayTryMap::try_map(args, |arg| self.convert_expr(arg).map(Box::new))?;
         Ok((op, args))
     }
 
