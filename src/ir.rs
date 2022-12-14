@@ -155,7 +155,7 @@ pub enum Expr {
 }
 
 #[allow(non_camel_case_types)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum JumpKind {
     Boring,
     Call,
