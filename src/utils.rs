@@ -1,3 +1,5 @@
+pub mod array_try_map;
+
 use hecs::{Bundle, CommandBuffer, Query, World};
 
 pub fn insert_default_bundles<B: Bundle + Default, Q: Query>(world: &mut World) {

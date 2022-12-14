@@ -10,7 +10,7 @@ use pyo3::{
     types::{PyFunction, PyString, PyType},
 };
 
-use crate::array_try_map::ArrayTryMap;
+use crate::utils::array_try_map::ArrayTryMap;
 
 pub use self::ops::{Op1, Op2, Op3};
 
