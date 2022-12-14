@@ -61,6 +61,18 @@ impl Database {
             b_links.prev = Some(a);
         }
     }
+
+    pub fn reindex(&mut self) {
+        self.addr_to_entity = self
+            .world
+            .query_mut::<&Statement>()
+            .into_iter()
+            .filter_map(|(entity, stmt)| match stmt {
+                Statement::IMark { addr, .. } => Some((*addr, entity)),
+                _ => None,
+            })
+            .collect();
+    }
 }
 
 #[derive(Default)]
