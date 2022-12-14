@@ -9,10 +9,26 @@ crate-type = ["cdylib"]
 [features]
 
 [dependencies]
+anyhow = "1.0.66"
 hecs = { version = "0.9.1", features = ["macros"] }
 itertools = "0.10.5"
 phf = { version = "0.11.1", features = ["macros"] }
-pyo3 = { version = "0.17.3", features=[
+
+[dependencies.pyo3]
+version = "0.17.3"
+features=[
     "auto-initialize",
     "extension-module",
-] }
+    "anyhow",
+]
+
+[dependencies.iced-x86]
+version = "1.17.0"
+default-features = false
+features = [
+    "decoder",
+    "instr_info",
+    "intel",
+    "std",
+    "exhaustive_enums",
+]

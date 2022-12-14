@@ -1,9 +1,13 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
+use anyhow::Result;
 use hecs::{Bundle, Entity, World};
 use itertools::Itertools;
 
-use crate::ir::{Addr64, Block, JumpKind, Statement};
+use crate::{
+    ir::{Addr64, SimpleExpr, Statement},
+    lifting::X86Lifter,
+};
 
 #[derive(Default)]
 pub struct Database {
@@ -12,40 +16,81 @@ pub struct Database {
 }
 
 impl Database {
-    pub fn add_block(&mut self, block: Block) {
-        let Block {
-            statements,
-            next,
-            jump_kind,
-        } = block;
+    fn contains_addr(&self, addr: Addr64) -> bool {
+        self.addr_to_entity.contains_key(&addr)
+    }
 
-        if statements.is_empty() && jump_kind == JumpKind::NoDecode {
-            // Don't bother, it's an invalid block.
-            return;
+    pub fn add_func(&mut self, base_addr: Addr64, buf: &[u8], start_addr: Addr64) -> Result<()> {
+        let mut lifter = X86Lifter::new(buf, base_addr);
+        let buf_end_addr = base_addr + Addr64::try_from(buf.len()).unwrap();
+
+        let mut todo = vec![start_addr];
+        let mut done: HashSet<Addr64> = HashSet::new();
+
+        while let Some(addr) = todo.pop() {
+            // If already handled in this function, or previously inserted by
+            // another function, or if the address is simply out of range.
+            if done.contains(&addr)
+                || self.contains_addr(addr)
+                || !(base_addr..buf_end_addr).contains(&addr)
+            {
+                continue;
+            }
+
+            done.insert(addr);
+
+            lifter.set_cur_addr(addr);
+            let stmts = lifter.lift_block()?;
+
+            if let Some((_, last_stmt)) = stmts.last() {
+                match last_stmt {
+                    Statement::Jump {
+                        is_return: true, ..
+                    } => {
+                        // Don't continue past a return statement.
+                    }
+
+                    Statement::Jump {
+                        target,
+                        is_return: false,
+                        condition,
+                    } => {
+                        // It's a conditional branch. Continue to the
+                        // instruction right after the block, which is also the
+                        // lifter's current address right after it decoded the
+                        // block.
+                        if condition.is_some() {
+                            todo.push(lifter.cur_addr());
+                        }
+
+                        // Either way, if it's a known static target...
+                        if let SimpleExpr::Const(target) = target {
+                            todo.push(*target);
+                        }
+                    }
+
+                    _ => {
+                        // A block ending with anything else means we hit a
+                        // decoding error. Don't try to continue to the next
+                        // instruction.
+                    }
+                }
+            }
+
+            self.add_block(stmts);
         }
 
-        let mut addr = None;
+        Ok(())
+    }
 
-        let entities = statements
+    fn add_block(&mut self, stmts: Vec<(StatementAddr, Statement)>) {
+        let entities = stmts
             .into_iter()
-            .chain(std::iter::once(Statement::EndOfBlock { next, jump_kind }))
-            .map(|stmt| {
-                if let Statement::IMark {
-                    addr: orig_addr, ..
-                } = stmt
-                {
-                    addr = Some(StatementAddr {
-                        orig_addr,
-                        ir_stmt_offset: 0,
-                    });
-                } else {
-                    addr.as_mut().expect("missing IMark").ir_stmt_offset += 1;
-                }
-
+            .map(|(addr, stmt)| {
                 self.world.spawn(StatementBundle {
                     stmt,
                     links: IntraBlockLinks::default(),
-                    addr: addr.expect("missing IMark"),
+                    addr,
                 })
             })
             .collect::<Vec<_>>();
@@ -63,6 +108,8 @@ impl Database {
     }
 
     pub fn reindex(&mut self) {
+        // TODO
+        /*
         self.addr_to_entity = self
             .world
             .query_mut::<&Statement>()
@@ -72,6 +119,7 @@ impl Database {
                 _ => None,
             })
             .collect();
+            */
     }
 }
 
@@ -83,10 +131,10 @@ pub struct IntraBlockLinks {
 
 #[derive(Clone, Copy, Debug)]
 pub struct StatementAddr {
-    /// Address at the last IMark
-    pub orig_addr: Addr64,
-    /// Number of statements since the last IMark
-    pub ir_stmt_offset: usize,
+    /// Address of the original assembly instruction
+    pub asm_addr: Addr64,
+    /// Index of this statement inside the assembly instruction's IR
+    pub ir_index: usize,
 }
 
 #[derive(Bundle)]

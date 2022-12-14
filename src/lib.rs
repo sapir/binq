@@ -1,11 +1,15 @@
+// TODO: remove
+#![allow(dead_code)]
+
 mod analysis;
 mod database;
 mod ir;
+mod lifting;
 mod utils;
 
 use pyo3::prelude::*;
 
-use self::{database::Database, ir::IrConverter};
+use self::{database::Database, ir::Addr64};
 
 #[pyclass(name = "Database")]
 struct PyDatabase(Database);
@@ -17,15 +21,11 @@ impl PyDatabase {
         Self(Database::default())
     }
 
-    fn add_block(&mut self, py: Python, irsb: &PyAny) -> PyResult<()> {
-        // TODO: cache the converter
-        let pyvex = py.import("pyvex")?;
-        let converter = IrConverter::new(pyvex)?;
-
-        let block = converter.convert_block(irsb)?;
-        self.0.add_block(block);
-
-        Ok(())
+    #[args(start_addr = "None")]
+    fn add_func(&mut self, base_addr: Addr64, buf: &[u8], start_addr: Option<u64>) -> PyResult<()> {
+        self.0
+            .add_func(base_addr, buf, start_addr.unwrap_or(base_addr))
+            .map_err(PyErr::from)
     }
 
     fn analyze(&mut self) {

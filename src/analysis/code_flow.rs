@@ -2,7 +2,8 @@ use hecs::Entity;
 
 use crate::{
     database::{Database, IntraBlockLinks},
-    ir::{Addr64, Expr, JumpKind, Statement},
+    ir::{Addr64, Statement},
+    // ir::{Addr64, Expr, JumpKind},
     utils::insert_default_bundles,
 };
 
@@ -15,6 +16,7 @@ pub enum CodeFlowKind {
     Special,
 }
 
+/*
 impl CodeFlowKind {
     pub(crate) fn for_jump_kind(jk: JumpKind) -> Option<Self> {
         Some(match jk {
@@ -50,6 +52,7 @@ impl CodeFlowKind {
         })
     }
 }
+*/
 
 #[derive(Clone, Debug)]
 pub struct CodeFlowEdge {
@@ -84,8 +87,9 @@ pub fn add_code_flow(db: &mut Database) {
     {
         let out = &mut out.0;
 
-        let mut kind_of_edge_to_next = None;
+        // let mut kind_of_edge_to_next = None;
 
+        /*
         // TODO: calls inside expressions
         match stmt {
             Statement::NoOp
@@ -170,6 +174,7 @@ pub fn add_code_flow(db: &mut Database) {
                 is_conditional,
             });
         }
+        */
 
         // Add the reverse edges
         for edge in out {

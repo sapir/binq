@@ -1,582 +1,190 @@
-mod ops;
-
-use std::any::type_name;
-
-use phf::phf_map;
-use pyo3::{
-    exceptions::PyValueError,
-    intern,
-    prelude::*,
-    types::{PyFunction, PyString, PyType},
-};
-
-use crate::utils::array_try_map::ArrayTryMap;
-
-pub use self::ops::{Op1, Op2, Op3};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub type Addr64 = u64;
-pub type IRTemp = u32;
 
-type PhfStringMap<T> = phf::Map<&'static str, T>;
+pub type Const = u64;
 
-fn py_string_to_enum<T: Copy>(map: &PhfStringMap<T>, string: &PyAny) -> PyResult<T> {
-    string
-        .cast_as::<PyString>()
-        .ok()
-        .and_then(|s| {
-            let s = s.to_str().ok()?;
-            map.get(s).copied()
-        })
-        .ok_or_else(|| {
-            PyValueError::new_err(format!("Bad {} string {:?}", type_name::<T>(), string))
-        })
-}
+static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Clone, Copy, Debug)]
-pub enum IRType {
-    I1,
-    I8,
-    I16,
-    I32,
-    I64,
-    I128,
-    F16,
-    F32,
-    F64,
-    D32,
-    D64,
-    D128,
-    F128,
-    V128,
-    V256,
-}
-
-const IR_TYPES: PhfStringMap<IRType> = phf_map! {
-    "Ity_I1" => IRType::I1,
-    "Ity_I8" => IRType::I8,
-    "Ity_I16" => IRType::I16,
-    "Ity_I32" => IRType::I32,
-    "Ity_I64" => IRType::I64,
-    "Ity_I128" => IRType::I128,
-    "Ity_F16" => IRType::F16,
-    "Ity_F32" => IRType::F32,
-    "Ity_F64" => IRType::F64,
-    "Ity_D32" => IRType::D32,
-    "Ity_D64" => IRType::D64,
-    "Ity_D128" => IRType::D128,
-    "Ity_F128" => IRType::F128,
-    "Ity_V128" => IRType::V128,
-    "Ity_V256" => IRType::V256,
-};
-
-impl<'source> FromPyObject<'source> for IRType {
-    fn extract(ob: &'source PyAny) -> PyResult<Self> {
-        py_string_to_enum(&IR_TYPES, ob)
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum Const {
-    U1(bool),
-    U8(u8),
-    U16(u16),
-    U32(u32),
-    U64(u64),
-    F32(f32),
-    F64(f64),
-    V128(u16),
-    V256(u32),
-}
-
-impl TryFrom<Const> for u64 {
-    type Error = ();
-
-    fn try_from(value: Const) -> Result<Self, Self::Error> {
-        Ok(match value {
-            Const::U1(x) => x.into(),
-            Const::U8(x) => x.into(),
-            Const::U16(x) => x.into(),
-            Const::U32(x) => x.into(),
-            Const::U64(x) => x.into(),
-            Const::V128(x) => x.into(),
-            Const::V256(x) => x.into(),
-
-            Const::F32(_) | Const::F64(_) => {
-                return Err(());
-            }
-        })
-    }
-}
-
-#[derive(Debug)]
-pub enum Expr {
-    Get {
-        offset: i32,
-        ty: IRType,
-    },
-    // TODO
-    GetI {},
-    RdTmp(IRTemp),
-    Op1 {
-        op: Op1,
-        arg: Box<Expr>,
-    },
-    Op2 {
-        op: Op2,
-        args: [Box<Expr>; 2],
-    },
-    Op3 {
-        op: Op3,
-        args: [Box<Expr>; 3],
-    },
-    Op4 {
-        op: String,
-        args: [Box<Expr>; 4],
-    },
-    Load {
-        endianness: Endianness,
-        ty: IRType,
-        addr: Box<Expr>,
-    },
-    Const(Const),
-    /// Call to a pure C function
-    CCall {
-        // TODO
-        func: (),
-        return_ty: IRType,
-        args: Vec<Expr>,
-    },
-    /// If-then-else
-    Ite {
-        condition: Box<Expr>,
-        true_value: Box<Expr>,
-        false_value: Box<Expr>,
-    },
-}
-
-#[allow(non_camel_case_types)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum JumpKind {
-    Boring,
-    Call,
-    Ret,
-    ClientReq,
-    Yield,
-    EmWarn,
-    EmFail,
-    NoDecode,
-    MapFail,
-    InvalICache,
-    FlushDCache,
-    NoRedir,
-    SigILL,
-    SigTRAP,
-    SigSEGV,
-    SigBUS,
-    SigFPE,
-    SigFPE_IntDiv,
-    SigFPE_IntOvf,
-    Privileged,
-    Sys_syscall,
-    Sys_int32,
-    Sys_int128,
-    Sys_int129,
-    Sys_int130,
-    Sys_int145,
-    Sys_int210,
-    Sys_sysenter,
-}
+pub struct Temp(pub u64);
 
-const JUMP_KINDS: PhfStringMap<JumpKind> = phf_map! {
-    "Ijk_Boring" => JumpKind::Boring,
-    "Ijk_Call" => JumpKind::Call,
-    "Ijk_Ret" => JumpKind::Ret,
-    "Ijk_ClientReq" => JumpKind::ClientReq,
-    "Ijk_Yield" => JumpKind::Yield,
-    "Ijk_EmWarn" => JumpKind::EmWarn,
-    "Ijk_EmFail" => JumpKind::EmFail,
-    "Ijk_NoDecode" => JumpKind::NoDecode,
-    "Ijk_MapFail" => JumpKind::MapFail,
-    "Ijk_InvalICache" => JumpKind::InvalICache,
-    "Ijk_FlushDCache" => JumpKind::FlushDCache,
-    "Ijk_NoRedir" => JumpKind::NoRedir,
-    "Ijk_SigILL" => JumpKind::SigILL,
-    "Ijk_SigTRAP" => JumpKind::SigTRAP,
-    "Ijk_SigSEGV" => JumpKind::SigSEGV,
-    "Ijk_SigBUS" => JumpKind::SigBUS,
-    "Ijk_SigFPE" => JumpKind::SigFPE,
-    "Ijk_SigFPE_IntDiv" => JumpKind::SigFPE_IntDiv,
-    "Ijk_SigFPE_IntOvf" => JumpKind::SigFPE_IntOvf,
-    "Ijk_Privileged" => JumpKind::Privileged,
-    "Ijk_Sys_syscall" => JumpKind::Sys_syscall,
-    "Ijk_Sys_int32" => JumpKind::Sys_int32,
-    "Ijk_Sys_int128" => JumpKind::Sys_int128,
-    "Ijk_Sys_int129" => JumpKind::Sys_int129,
-    "Ijk_Sys_int130" => JumpKind::Sys_int130,
-    "Ijk_Sys_int145" => JumpKind::Sys_int145,
-    "Ijk_Sys_int210" => JumpKind::Sys_int210,
-    "Ijk_Sys_sysenter" => JumpKind::Sys_sysenter,
-};
-
-impl<'source> FromPyObject<'source> for JumpKind {
-    fn extract(ob: &'source PyAny) -> PyResult<Self> {
-        py_string_to_enum(&JUMP_KINDS, ob)
+impl Temp {
+    pub fn new() -> Self {
+        Self(NEXT_TEMP.fetch_add(1, Ordering::SeqCst))
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-pub enum Endianness {
-    Little,
-    Big,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Register(pub u16);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Variable {
+    Register(Register),
+    Temp(Temp),
 }
 
-const ENDIANNESSES: PhfStringMap<Endianness> = phf_map! {
-    "Iend_LE" => Endianness::Little,
-    "Iend_BE" => Endianness::Big,
-};
-
-impl<'source> FromPyObject<'source> for Endianness {
-    fn extract(ob: &'source PyAny) -> PyResult<Self> {
-        py_string_to_enum(&ENDIANNESSES, ob)
+impl Variable {
+    pub fn new_temp() -> Self {
+        Self::Temp(Temp::new())
     }
 }
 
-#[derive(Debug)]
+impl From<Register> for Variable {
+    fn from(reg: Register) -> Self {
+        Self::Register(reg)
+    }
+}
+
+impl From<Temp> for Variable {
+    fn from(temp: Temp) -> Self {
+        Self::Temp(temp)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SimpleExpr {
+    Const(Const),
+    Variable(Variable),
+}
+
+impl From<Const> for SimpleExpr {
+    fn from(value: Const) -> Self {
+        Self::Const(value)
+    }
+}
+
+impl From<Register> for SimpleExpr {
+    fn from(reg: Register) -> Self {
+        Self::Variable(reg.into())
+    }
+}
+
+impl From<Variable> for SimpleExpr {
+    fn from(value: Variable) -> Self {
+        Self::Variable(value)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnaryOpKind {
+    Not,
+}
+
+pub struct UnaryOp {
+    pub op: UnaryOpKind,
+    pub value: SimpleExpr,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BinaryOpKind {
+    Add,
+    Sub,
+    Mul,
+    Shl,
+    Shr,
+    Sar,
+    Rol,
+    Ror,
+    And,
+    Or,
+    Xor,
+}
+
+pub struct BinaryOp {
+    pub op: BinaryOpKind,
+    pub lhs: SimpleExpr,
+    pub rhs: SimpleExpr,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompareOpKind {
+    Equal,
+    NotEqual,
+    LessThanUnsigned,
+    LessThanOrEqualUnsigned,
+    GreaterThanUnsigned,
+    GreaterThanOrEqualUnsigned,
+    LessThanSigned,
+    LessThanOrEqualSigned,
+    GreaterThanSigned,
+    GreaterThanOrEqualSigned,
+}
+
+pub struct CompareOp {
+    pub kind: CompareOpKind,
+    pub lhs: SimpleExpr,
+    pub rhs: SimpleExpr,
+}
+
+/// An X86 condition code that involves multiple flags
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ComplexX86ConditionCode {
+    Be,
+    L,
+    Le,
+}
+
+pub enum Expr {
+    Unknown,
+    Simple(SimpleExpr),
+    Deref(SimpleExpr),
+    UnaryOp(UnaryOp),
+    BinaryOp(BinaryOp),
+    CompareOp(CompareOp),
+    X86Flag {
+        flag_reg: Register,
+        from_expr: Variable,
+    },
+    ComplexX86ConditionCode(ComplexX86ConditionCode),
+}
+
+impl<T> From<T> for Expr
+where
+    SimpleExpr: From<T>,
+{
+    fn from(value: T) -> Self {
+        Self::Simple(value.into())
+    }
+}
+
+pub enum BranchKind {
+    Jump,
+    ConditionalTrue,
+    ConditionalFalse,
+}
+
 pub enum Statement {
-    NoOp,
-    IMark {
-        addr: Addr64,
-        len: u32,
-        delta: u8,
+    Nop,
+
+    Assign {
+        lhs: Variable,
+        rhs: Expr,
     },
-    // TODO
-    AbiHint,
-    Put {
-        offset: i32,
-        data: Expr,
+
+    InsertBits {
+        reg: Register,
+        shift: u8,
+        num_bits: u8,
+        value: SimpleExpr,
     },
-    // TODO
-    PutI,
-    WrTmp {
-        tmp: IRTemp,
-        data: Expr,
-    },
+
     Store {
-        endianness: Endianness,
-        addr: Expr,
-        data: Expr,
+        addr: SimpleExpr,
+        value: SimpleExpr,
     },
-    // TODO
-    CAS,
-    // TODO
-    LLSC,
-    // TODO
-    MemoryBusEvent,
-    // TODO
-    Dirty,
-    /// Conditional ("guarded") exit
-    Exit {
-        guard: Expr,
-        dst: Const,
-        jump_kind: JumpKind,
-        offset_ip: i32,
+
+    // TODO: abi info?
+    Call {
+        target: SimpleExpr,
     },
-    // TODO
-    /// Conditional ("guarded") load
-    LoadG,
-    // TODO
-    /// Conditional ("guarded") store
-    StoreG,
-    /// Fake statement, non-existent in the original IR, representing the
-    /// Block's `next`
-    EndOfBlock {
-        next: Expr,
-        jump_kind: JumpKind,
+
+    Jump {
+        target: SimpleExpr,
+        is_return: bool,
+        condition: Option<SimpleExpr>,
     },
-}
 
-#[derive(Debug)]
-pub struct Block {
-    pub statements: Vec<Statement>,
-    pub next: Expr,
-    pub jump_kind: JumpKind,
-}
-
-#[allow(non_snake_case)]
-pub struct IrConverter<'a> {
-    py: Python<'a>,
-
-    tag_to_stmt_class: &'a PyFunction,
-    stmt_type_NoOp: &'a PyType,
-    stmt_type_IMark: &'a PyType,
-    stmt_type_abihint: &'a PyType,
-    stmt_type_put: &'a PyType,
-    stmt_type_puti: &'a PyType,
-    stmt_type_wrtmp: &'a PyType,
-    stmt_type_store: &'a PyType,
-    stmt_type_cas: &'a PyType,
-    stmt_type_llsc: &'a PyType,
-    stmt_type_mbe: &'a PyType,
-    stmt_type_dirty: &'a PyType,
-    stmt_type_exit: &'a PyType,
-    stmt_type_loadg: &'a PyType,
-    stmt_type_storeg: &'a PyType,
-
-    tag_to_expr_class: &'a PyFunction,
-    expr_type_Get: &'a PyType,
-    expr_type_GetI: &'a PyType,
-    expr_type_RdTmp: &'a PyType,
-    expr_type_Qop: &'a PyType,
-    expr_type_Triop: &'a PyType,
-    expr_type_Binop: &'a PyType,
-    expr_type_Unop: &'a PyType,
-    expr_type_Load: &'a PyType,
-    expr_type_Const: &'a PyType,
-    expr_type_CCall: &'a PyType,
-    expr_type_ITE: &'a PyType,
-
-    tag_to_const_class: &'a PyFunction,
-    const_type_U1: &'a PyType,
-    const_type_U8: &'a PyType,
-    const_type_U16: &'a PyType,
-    const_type_U32: &'a PyType,
-    const_type_U64: &'a PyType,
-    const_type_F32: &'a PyType,
-    const_type_F32i: &'a PyType,
-    const_type_F64: &'a PyType,
-    const_type_F64i: &'a PyType,
-    const_type_V128: &'a PyType,
-    const_type_V256: &'a PyType,
-}
-
-impl<'a> IrConverter<'a> {
-    pub fn new(pyvex: &'a PyModule) -> PyResult<Self> {
-        let py = pyvex.py();
-
-        let pyvex_stmt = pyvex.getattr("stmt")?;
-        let tag_to_stmt_class: &PyFunction = pyvex_stmt.getattr("tag_to_stmt_class")?.cast_as()?;
-
-        let pyvex_expr = pyvex.getattr("expr")?;
-        let tag_to_expr_class: &PyFunction = pyvex_expr.getattr("tag_to_expr_class")?.cast_as()?;
-
-        let pyvex_const = pyvex.getattr("const")?;
-        let tag_to_const_class: &PyFunction =
-            pyvex_const.getattr("tag_to_const_class")?.cast_as()?;
-
-        Ok(Self {
-            py,
-            tag_to_stmt_class,
-            stmt_type_NoOp: pyvex_stmt.getattr("NoOp")?.cast_as()?,
-            stmt_type_IMark: pyvex_stmt.getattr("IMark")?.cast_as()?,
-            stmt_type_abihint: pyvex_stmt.getattr("AbiHint")?.cast_as()?,
-            stmt_type_put: pyvex_stmt.getattr("Put")?.cast_as()?,
-            stmt_type_puti: pyvex_stmt.getattr("PutI")?.cast_as()?,
-            stmt_type_wrtmp: pyvex_stmt.getattr("WrTmp")?.cast_as()?,
-            stmt_type_store: pyvex_stmt.getattr("Store")?.cast_as()?,
-            stmt_type_cas: pyvex_stmt.getattr("CAS")?.cast_as()?,
-            stmt_type_llsc: pyvex_stmt.getattr("LLSC")?.cast_as()?,
-            stmt_type_mbe: pyvex_stmt.getattr("MBE")?.cast_as()?,
-            stmt_type_dirty: pyvex_stmt.getattr("Dirty")?.cast_as()?,
-            stmt_type_exit: pyvex_stmt.getattr("Exit")?.cast_as()?,
-            stmt_type_loadg: pyvex_stmt.getattr("LoadG")?.cast_as()?,
-            stmt_type_storeg: pyvex_stmt.getattr("StoreG")?.cast_as()?,
-
-            tag_to_expr_class,
-            expr_type_Get: pyvex_expr.getattr("Get")?.cast_as()?,
-            expr_type_GetI: pyvex_expr.getattr("GetI")?.cast_as()?,
-            expr_type_RdTmp: pyvex_expr.getattr("RdTmp")?.cast_as()?,
-            expr_type_Qop: pyvex_expr.getattr("Qop")?.cast_as()?,
-            expr_type_Triop: pyvex_expr.getattr("Triop")?.cast_as()?,
-            expr_type_Binop: pyvex_expr.getattr("Binop")?.cast_as()?,
-            expr_type_Unop: pyvex_expr.getattr("Unop")?.cast_as()?,
-            expr_type_Load: pyvex_expr.getattr("Load")?.cast_as()?,
-            expr_type_Const: pyvex_expr.getattr("Const")?.cast_as()?,
-            expr_type_CCall: pyvex_expr.getattr("CCall")?.cast_as()?,
-            expr_type_ITE: pyvex_expr.getattr("ITE")?.cast_as()?,
-
-            tag_to_const_class,
-            const_type_U1: pyvex_const.getattr("U1")?.cast_as()?,
-            const_type_U8: pyvex_const.getattr("U8")?.cast_as()?,
-            const_type_U16: pyvex_const.getattr("U16")?.cast_as()?,
-            const_type_U32: pyvex_const.getattr("U32")?.cast_as()?,
-            const_type_U64: pyvex_const.getattr("U64")?.cast_as()?,
-            const_type_F32: pyvex_const.getattr("F32")?.cast_as()?,
-            const_type_F32i: pyvex_const.getattr("F32i")?.cast_as()?,
-            const_type_F64: pyvex_const.getattr("F64")?.cast_as()?,
-            const_type_F64i: pyvex_const.getattr("F64i")?.cast_as()?,
-            const_type_V128: pyvex_const.getattr("V128")?.cast_as()?,
-            const_type_V256: pyvex_const.getattr("V256")?.cast_as()?,
-        })
-    }
-
-    pub fn convert_block(&self, block: &PyAny) -> PyResult<Block> {
-        Ok(Block {
-            statements: block
-                .getattr(intern!(self.py, "statements"))?
-                .iter()?
-                .map(|stmt| self.convert_stmt(stmt?))
-                .collect::<PyResult<Vec<_>>>()?,
-            next: self.convert_expr(block.getattr(intern!(self.py, "next"))?)?,
-            jump_kind: block.getattr(intern!(self.py, "jumpkind"))?.extract()?,
-        })
-    }
-
-    pub fn convert_stmt(&self, stmt: &PyAny) -> PyResult<Statement> {
-        let tag = stmt.getattr(intern!(self.py, "tag"))?;
-        let stmt_class = self.tag_to_stmt_class.call1((tag,))?;
-
-        let stmt = if stmt_class.is(self.stmt_type_NoOp) {
-            Statement::NoOp
-        } else if stmt_class.is(self.stmt_type_IMark) {
-            Statement::IMark {
-                addr: stmt.getattr(intern!(self.py, "addr"))?.extract()?,
-                len: stmt.getattr(intern!(self.py, "len"))?.extract()?,
-                delta: stmt.getattr(intern!(self.py, "delta"))?.extract()?,
-            }
-        } else if stmt_class.is(self.stmt_type_abihint) {
-            Statement::AbiHint
-        } else if stmt_class.is(self.stmt_type_put) {
-            Statement::Put {
-                offset: stmt.getattr(intern!(self.py, "offset"))?.extract()?,
-                data: self.convert_expr(stmt.getattr(intern!(self.py, "data"))?)?,
-            }
-        } else if stmt_class.is(self.stmt_type_puti) {
-            Statement::PutI
-        } else if stmt_class.is(self.stmt_type_wrtmp) {
-            Statement::WrTmp {
-                tmp: stmt.getattr(intern!(self.py, "tmp"))?.extract()?,
-                data: self.convert_expr(stmt.getattr(intern!(self.py, "data"))?)?,
-            }
-        } else if stmt_class.is(self.stmt_type_store) {
-            Statement::Store {
-                endianness: stmt.getattr(intern!(self.py, "end"))?.extract()?,
-                addr: self.convert_expr(stmt.getattr(intern!(self.py, "addr"))?)?,
-                data: self.convert_expr(stmt.getattr(intern!(self.py, "data"))?)?,
-            }
-        } else if stmt_class.is(self.stmt_type_cas) {
-            Statement::CAS
-        } else if stmt_class.is(self.stmt_type_llsc) {
-            Statement::LLSC
-        } else if stmt_class.is(self.stmt_type_mbe) {
-            Statement::MemoryBusEvent
-        } else if stmt_class.is(self.stmt_type_dirty) {
-            Statement::Dirty
-        } else if stmt_class.is(self.stmt_type_exit) {
-            Statement::Exit {
-                guard: self.convert_expr(stmt.getattr(intern!(self.py, "guard"))?)?,
-                dst: self.convert_const(stmt.getattr(intern!(self.py, "dst"))?)?,
-                jump_kind: stmt.getattr(intern!(self.py, "jk"))?.extract()?,
-                offset_ip: stmt.getattr(intern!(self.py, "offsIP"))?.extract()?,
-            }
-        } else if stmt_class.is(self.stmt_type_loadg) {
-            Statement::LoadG
-        } else if stmt_class.is(self.stmt_type_storeg) {
-            Statement::StoreG
-        } else {
-            unimplemented!("unknown statement type for {:?}", stmt);
-        };
-
-        Ok(stmt)
-    }
-
-    fn convert_op_and_args<'b, Op: FromPyObject<'b>, const N: usize>(
-        &self,
-        expr: &'b PyAny,
-    ) -> PyResult<(Op, [Box<Expr>; N])> {
-        let op = expr.getattr(intern!(self.py, "op"))?.extract()?;
-        let args: [&PyAny; N] = expr.getattr(intern!(self.py, "args"))?.extract()?;
-        let args = ArrayTryMap::try_map(args, |arg| self.convert_expr(arg).map(Box::new))?;
-        Ok((op, args))
-    }
-
-    pub fn convert_expr(&self, expr: &PyAny) -> PyResult<Expr> {
-        let tag = expr.getattr(intern!(self.py, "tag"))?;
-        let expr_class = self.tag_to_expr_class.call1((tag,))?;
-
-        let expr = if expr_class.is(self.expr_type_Get) {
-            Expr::Get {
-                offset: expr.getattr(intern!(self.py, "offset"))?.extract()?,
-                ty: expr.getattr(intern!(self.py, "ty"))?.extract()?,
-            }
-        } else if expr_class.is(self.expr_type_GetI) {
-            Expr::GetI {}
-        } else if expr_class.is(self.expr_type_RdTmp) {
-            Expr::RdTmp(expr.getattr(intern!(self.py, "tmp"))?.extract()?)
-        } else if expr_class.is(self.expr_type_Qop) {
-            let (op, args) = self.convert_op_and_args(expr)?;
-            Expr::Op4 { op, args }
-        } else if expr_class.is(self.expr_type_Triop) {
-            let (op, args) = self.convert_op_and_args(expr)?;
-            Expr::Op3 { op, args }
-        } else if expr_class.is(self.expr_type_Binop) {
-            let (op, args) = self.convert_op_and_args(expr)?;
-            Expr::Op2 { op, args }
-        } else if expr_class.is(self.expr_type_Unop) {
-            let (op, args) = self.convert_op_and_args(expr)?;
-            let [arg] = args;
-            Expr::Op1 { op, arg }
-        } else if expr_class.is(self.expr_type_Load) {
-            Expr::Load {
-                endianness: expr.getattr(intern!(self.py, "end"))?.extract()?,
-                ty: expr.getattr(intern!(self.py, "ty"))?.extract()?,
-                addr: Box::new(self.convert_expr(expr.getattr(intern!(self.py, "addr"))?)?),
-            }
-        } else if expr_class.is(self.expr_type_Const) {
-            Expr::Const(self.convert_const(expr.getattr(intern!(self.py, "con"))?)?)
-        } else if expr_class.is(self.expr_type_CCall) {
-            Expr::CCall {
-                func: (),
-                return_ty: expr.getattr(intern!(self.py, "retty"))?.extract()?,
-                args: expr
-                    .getattr(intern!(self.py, "args"))?
-                    .iter()?
-                    .map(|arg| self.convert_expr(arg?))
-                    .collect::<PyResult<Vec<Expr>>>()?,
-            }
-        } else if expr_class.is(self.expr_type_ITE) {
-            Expr::Ite {
-                condition: Box::new(self.convert_expr(expr.getattr(intern!(self.py, "cond"))?)?),
-                true_value: Box::new(self.convert_expr(expr.getattr(intern!(self.py, "iftrue"))?)?),
-                false_value: Box::new(
-                    self.convert_expr(expr.getattr(intern!(self.py, "iffalse"))?)?,
-                ),
-            }
-        } else {
-            unimplemented!("unknown expression type for {:?}", expr);
-        };
-
-        Ok(expr)
-    }
-
-    pub fn convert_const(&self, value: &PyAny) -> PyResult<Const> {
-        let tag = value.getattr(intern!(self.py, "tag"))?;
-        let const_class = self.tag_to_const_class.call1((tag,))?;
-
-        let inner = value.getattr(intern!(self.py, "value"))?;
-        let value = if const_class.is(self.const_type_U1) {
-            Const::U1(inner.extract()?)
-        } else if const_class.is(self.const_type_U8) {
-            Const::U8(inner.extract()?)
-        } else if const_class.is(self.const_type_U16) {
-            Const::U16(inner.extract()?)
-        } else if const_class.is(self.const_type_U32) {
-            Const::U32(inner.extract()?)
-        } else if const_class.is(self.const_type_U64) {
-            Const::U64(inner.extract()?)
-
-            // pyvex gives us floating point values for F32i and F64i
-        } else if const_class.is(self.const_type_F32) || const_class.is(self.const_type_F32i) {
-            Const::F32(inner.extract()?)
-        } else if const_class.is(self.const_type_F64) || const_class.is(self.const_type_F64i) {
-            Const::F64(inner.extract()?)
-        } else if const_class.is(self.const_type_V128) {
-            Const::V128(inner.extract()?)
-        } else if const_class.is(self.const_type_V256) {
-            Const::V256(inner.extract()?)
-        } else {
-            unimplemented!("unknown const value type for {:?}", value);
-        };
-
-        Ok(value)
-    }
+    // TODO: affected regs
+    Intrinsic,
 }
