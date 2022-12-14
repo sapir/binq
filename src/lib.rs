@@ -1,10 +1,12 @@
+mod analysis;
 mod array_try_map;
-mod convert_ir;
 mod database;
+mod ir;
+mod utils;
 
 use pyo3::prelude::*;
 
-use self::{convert_ir::IrConverter, database::Database};
+use self::{database::Database, ir::IrConverter};
 
 #[pyclass(name = "Database")]
 struct PyDatabase(Database);
@@ -25,6 +27,10 @@ impl PyDatabase {
         self.0.add_block(block);
 
         Ok(())
+    }
+
+    fn analyze(&mut self) {
+        analysis::analyze(&mut self.0);
     }
 }
 

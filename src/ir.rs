@@ -75,7 +75,7 @@ impl<'source> FromPyObject<'source> for IRType {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum Const {
     U1(bool),
     U8(u8),
@@ -86,6 +86,26 @@ pub enum Const {
     F64(f64),
     V128(u16),
     V256(u32),
+}
+
+impl TryFrom<Const> for u64 {
+    type Error = ();
+
+    fn try_from(value: Const) -> Result<Self, Self::Error> {
+        Ok(match value {
+            Const::U1(x) => x.into(),
+            Const::U8(x) => x.into(),
+            Const::U16(x) => x.into(),
+            Const::U32(x) => x.into(),
+            Const::U64(x) => x.into(),
+            Const::V128(x) => x.into(),
+            Const::V256(x) => x.into(),
+
+            Const::F32(_) | Const::F64(_) => {
+                return Err(());
+            }
+        })
+    }
 }
 
 #[derive(Debug)]

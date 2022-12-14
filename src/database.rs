@@ -1,11 +1,14 @@
+use std::collections::HashMap;
+
 use hecs::{Bundle, Entity, World};
 use itertools::Itertools;
 
-use crate::convert_ir::{Block, Statement};
+use crate::ir::{Addr64, Block, Statement};
 
 #[derive(Default)]
 pub struct Database {
-    world: World,
+    pub world: World,
+    pub addr_to_entity: HashMap<Addr64, Entity>,
 }
 
 impl Database {
