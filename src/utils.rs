@@ -1,13 +1,16 @@
 pub mod array_try_map;
 
-use hecs::{Bundle, CommandBuffer, Query, World};
+use hecs::{DynamicBundle, Query, World};
 
-pub fn insert_default_bundles<B: Bundle + Default, Q: Query>(world: &mut World) {
-    let mut cmdbuf = CommandBuffer::new();
+pub fn insert_default_bundles<B: DynamicBundle + Default, Q: Query>(world: &mut World) {
+    let entities = world
+        .query_mut::<()>()
+        .with::<Q>()
+        .into_iter()
+        .map(|(entity, ())| entity)
+        .collect::<Vec<_>>();
 
-    for (entity, ()) in world.query_mut::<()>().with::<Q>() {
-        cmdbuf.insert(entity, B::default());
+    for entity in entities {
+        world.insert(entity, B::default()).unwrap();
     }
-
-    cmdbuf.run_on(world);
 }
