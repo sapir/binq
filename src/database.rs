@@ -5,6 +5,7 @@ use hecs::{Bundle, Entity, World};
 use itertools::Itertools;
 
 use crate::{
+    analysis::code_flow::{InCodeFlowEdges, OutCodeFlowEdges},
     ir::{Addr64, SimpleExpr, Statement},
     lifting::X86Lifter,
 };
@@ -89,8 +90,10 @@ impl Database {
             .map(|(addr, stmt)| {
                 self.world.spawn(StatementBundle {
                     stmt,
-                    links: IntraBlockLinks::default(),
                     addr,
+                    links: Default::default(),
+                    out_code_flow: Default::default(),
+                    in_code_flow: Default::default(),
                 })
             })
             .collect::<Vec<_>>();
@@ -140,6 +143,10 @@ pub struct StatementAddr {
 #[derive(Bundle)]
 struct StatementBundle {
     stmt: Statement,
-    links: IntraBlockLinks,
     addr: StatementAddr,
+    links: IntraBlockLinks,
+    // Analysis components. We include these at statement spawn time to improve
+    // performance.
+    out_code_flow: OutCodeFlowEdges,
+    in_code_flow: InCodeFlowEdges,
 }
