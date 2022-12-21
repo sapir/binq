@@ -6,7 +6,7 @@ pub type Const = u64;
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Temp(pub u64);
 
 impl Temp {
@@ -15,10 +15,10 @@ impl Temp {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Register(pub u16);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Variable {
     Register(Register),
     Temp(Temp),
@@ -145,6 +145,14 @@ pub enum Expr {
     UnaryOp(UnaryOp),
     BinaryOp(BinaryOp),
     CompareOp(CompareOp),
+    /// `lhs` with `num_bits` bits shifted left by `shift`, replaced by `rhs`
+    /// (also shifted left by `shift`)
+    InsertBits {
+        lhs: SimpleExpr,
+        shift: u8,
+        num_bits: u8,
+        rhs: SimpleExpr,
+    },
     X86Flag {
         flag_reg: Register,
         from_expr: Variable,
@@ -168,13 +176,6 @@ pub enum Statement {
     Assign {
         lhs: Variable,
         rhs: Expr,
-    },
-
-    InsertBits {
-        reg: Register,
-        shift: u8,
-        num_bits: u8,
-        value: SimpleExpr,
     },
 
     Store {

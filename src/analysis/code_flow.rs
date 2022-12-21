@@ -52,7 +52,6 @@ pub fn add_code_flow(db: &mut Database) {
         match stmt {
             Statement::Nop
             | Statement::Assign { .. }
-            | Statement::InsertBits { .. }
             | Statement::Store { .. }
             | Statement::Intrinsic => {
                 kind_of_edge_to_next = Some(CodeFlowKind::NextInsn);

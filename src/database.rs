@@ -7,7 +7,10 @@ use anyhow::Result;
 use hecs::{Bundle, Entity, World};
 
 use crate::{
-    analysis::code_flow::{InCodeFlowEdges, OutCodeFlowEdges},
+    analysis::{
+        code_flow::{InCodeFlowEdges, OutCodeFlowEdges},
+        data_flow::ValueSources,
+    },
     ir::{Addr64, Statement},
     lifting::X86Lifter,
 };
@@ -97,6 +100,7 @@ impl Database {
                 next_addr,
                 out_code_flow: Default::default(),
                 in_code_flow: Default::default(),
+                value_sources: Default::default(),
             });
 
             let old_entity = self.addr_to_entity.insert(addr, entity);
@@ -151,4 +155,5 @@ struct StatementBundle {
     // performance.
     out_code_flow: OutCodeFlowEdges,
     in_code_flow: InCodeFlowEdges,
+    value_sources: ValueSources,
 }

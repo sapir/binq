@@ -1,4 +1,5 @@
 pub mod array_try_map;
+pub mod vec_set;
 
 use hecs::{DynamicBundle, Query, World};
 

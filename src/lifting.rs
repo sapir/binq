@@ -784,7 +784,7 @@ impl MemoryAccess {
     }
 }
 
-fn wrap_x86_reg(reg: X86Register) -> Register {
+pub fn wrap_x86_reg(reg: X86Register) -> Register {
     Register((reg as usize).try_into().unwrap())
 }
 
