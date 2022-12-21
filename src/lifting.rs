@@ -67,10 +67,17 @@ impl<'a> X86Lifter<'a> {
         self.decoder.decode_out(&mut self.cur_insn);
     }
 
-    pub fn lift_block(&mut self) -> Result<Vec<(StatementAddr, Statement)>> {
+    pub fn lift_block(
+        &mut self,
+        mut should_stop_before: impl FnMut(Addr64) -> bool,
+    ) -> Result<Vec<(StatementAddr, Statement)>> {
         let mut out = Output::new(self.cur_addr());
 
         loop {
+            if should_stop_before(self.cur_addr()) {
+                break;
+            }
+
             out.next_addr = StatementAddr {
                 asm_addr: self.cur_addr(),
                 ir_index: 0,

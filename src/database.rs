@@ -38,10 +38,12 @@ impl Database {
                 continue;
             }
 
-            done.insert(addr);
-
             lifter.set_cur_addr(addr);
-            let stmts = lifter.lift_block()?;
+            let stmts = lifter.lift_block(|stmt_addr| {
+                done.contains(&stmt_addr)
+                    || self.contains_addr(stmt_addr)
+                    || !(base_addr..buf_end_addr).contains(&stmt_addr)
+            })?;
 
             if let Some((_, last_stmt)) = stmts.last() {
                 match last_stmt {
@@ -71,14 +73,17 @@ impl Database {
                     }
 
                     _ => {
-                        // A block ending with anything else means we hit a
-                        // decoding error. Don't try to continue to the next
-                        // instruction.
+                        // A block ending with anything else means we either hit
+                        // a decoding error, or some instruction that we've
+                        // already handled. Either way, don't try to continue to
+                        // the next instruction.
                     }
                 }
             }
 
             self.add_block(stmts);
+
+            done.insert(addr);
         }
 
         Ok(())
