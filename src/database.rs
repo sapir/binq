@@ -88,13 +88,30 @@ impl Database {
         let entities = stmts
             .into_iter()
             .map(|(addr, stmt)| {
-                self.world.spawn(StatementBundle {
+                let entity = self.world.spawn(StatementBundle {
                     stmt,
                     addr,
                     links: Default::default(),
                     out_code_flow: Default::default(),
                     in_code_flow: Default::default(),
-                })
+                });
+
+                if let StatementAddr {
+                    asm_addr,
+                    ir_index: 0,
+                } = addr
+                {
+                    let old_entity = self.addr_to_entity.insert(asm_addr, entity);
+
+                    if let Some(old_entity) = old_entity {
+                        panic!(
+                            "Statement @ {:#x} was lifted twice (entities {:?} and {:?})",
+                            asm_addr, old_entity, entity
+                        );
+                    }
+                }
+
+                entity
             })
             .collect::<Vec<_>>();
 
@@ -108,21 +125,6 @@ impl Database {
             a_links.next = Some(b);
             b_links.prev = Some(a);
         }
-    }
-
-    pub fn reindex(&mut self) {
-        // TODO
-        /*
-        self.addr_to_entity = self
-            .world
-            .query_mut::<&Statement>()
-            .into_iter()
-            .filter_map(|(entity, stmt)| match stmt {
-                Statement::IMark { addr, .. } => Some((*addr, entity)),
-                _ => None,
-            })
-            .collect();
-            */
     }
 }
 
