@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::{self, Display},
+};
 
 use anyhow::Result;
 use hecs::{Bundle, Entity, World};
@@ -124,6 +127,12 @@ impl StatementAddr {
             asm_addr,
             ir_index: 0,
         }
+    }
+}
+
+impl Display for StatementAddr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:#x}/{}", self.asm_addr, self.ir_index)
     }
 }
 
