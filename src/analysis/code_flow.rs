@@ -1,5 +1,3 @@
-use hecs::Entity;
-
 use crate::{
     database::{Database, NextStatementAddr, StatementAddr},
     ir::Statement,
@@ -19,9 +17,9 @@ pub enum CodeFlowKind {
 #[derive(Clone, Debug)]
 pub struct CodeFlowEdge {
     pub kind: CodeFlowKind,
-    pub from: Entity,
-    /// Only `Some` if target is statically known and exists in the database.
-    pub to: Option<Entity>,
+    pub from: StatementAddr,
+    /// Only `Some` if target is statically known.
+    pub to: Option<StatementAddr>,
     pub is_conditional: bool,
 }
 
@@ -37,14 +35,14 @@ pub fn add_code_flow(db: &mut Database) {
     let mut in_query = db.world.query::<&mut InCodeFlowEdges>();
     let mut in_view = in_query.view();
 
-    let addr_to_entity = {
-        let addr_to_entity = &db.addr_to_entity;
-        move |addr: StatementAddr| addr_to_entity.get(&addr).copied()
-    };
-
-    for (entity, (stmt, next_addr, out)) in db
+    for (_, (stmt, addr, next_addr, out)) in db
         .world
-        .query::<(&Statement, &NextStatementAddr, &mut OutCodeFlowEdges)>()
+        .query::<(
+            &Statement,
+            &StatementAddr,
+            &NextStatementAddr,
+            &mut OutCodeFlowEdges,
+        )>()
         .into_iter()
     {
         let out = &mut out.0;
@@ -63,11 +61,8 @@ pub fn add_code_flow(db: &mut Database) {
             Statement::Call { target } => {
                 out.push(CodeFlowEdge {
                     kind: CodeFlowKind::Call,
-                    from: entity,
-                    to: target
-                        .as_const()
-                        .map(StatementAddr::new_first)
-                        .and_then(addr_to_entity),
+                    from: *addr,
+                    to: target.as_const().map(StatementAddr::new_first),
                     is_conditional: false,
                 });
 
@@ -89,11 +84,8 @@ pub fn add_code_flow(db: &mut Database) {
 
                 out.push(CodeFlowEdge {
                     kind,
-                    from: entity,
-                    to: target
-                        .as_const()
-                        .map(StatementAddr::new_first)
-                        .and_then(addr_to_entity),
+                    from: *addr,
+                    to: target.as_const().map(StatementAddr::new_first),
                     is_conditional: condition.is_some(),
                 });
 
@@ -110,10 +102,8 @@ pub fn add_code_flow(db: &mut Database) {
 
             out.push(CodeFlowEdge {
                 kind,
-                from: entity,
-                // If we can't find the entity for the next instruction, leave
-                // the `to` as `None`.
-                to: addr_to_entity(next_addr.0),
+                from: *addr,
+                to: Some(next_addr.0),
                 is_conditional,
             });
         }
@@ -121,7 +111,9 @@ pub fn add_code_flow(db: &mut Database) {
         // Add the reverse edges
         for edge in out {
             if let Some(to) = edge.to {
-                in_view.get_mut(to).unwrap().0.push(edge.clone());
+                if let Some(to) = db.addr_to_entity.get(&to) {
+                    in_view.get_mut(*to).unwrap().0.push(edge.clone());
+                }
             }
         }
     }
