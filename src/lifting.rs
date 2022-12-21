@@ -5,7 +5,7 @@ use iced_x86::{
 };
 
 use crate::{
-    database::StatementAddr,
+    database::{NextStatementAddr, StatementAddr},
     ir::{
         Addr64, BinaryOp, BinaryOpKind, CompareOp, CompareOpKind, ComplexX86ConditionCode, Const,
         Expr, Register, SimpleExpr, Statement, UnaryOp, UnaryOpKind, Variable,
@@ -70,7 +70,7 @@ impl<'a> X86Lifter<'a> {
     pub fn lift_block(
         &mut self,
         mut should_stop_before: impl FnMut(Addr64) -> bool,
-    ) -> Result<Vec<(StatementAddr, Statement)>> {
+    ) -> Result<Vec<(StatementAddr, NextStatementAddr, Statement)>> {
         let mut out = Output::new(self.cur_addr());
 
         loop {
@@ -82,10 +82,16 @@ impl<'a> X86Lifter<'a> {
                 asm_addr: self.cur_addr(),
                 ir_index: 0,
             };
+            out.set_next_of_last(self.cur_addr());
 
             self.decode_next();
             if self.cur_insn.is_invalid() {
-                break;
+                // Set the invalid instruction's address as the next address.
+                // Don't just `break` because then we use `cur_addr()` for the
+                // next address, and `cur_addr` maybe already points past the
+                // invalid instruction.
+                let next_addr = out.next_addr.asm_addr;
+                return Ok(out.finish(next_addr));
             }
 
             self.lift_cur(&mut out)?;
@@ -94,7 +100,7 @@ impl<'a> X86Lifter<'a> {
                 out.inner
                     .last()
                     .unwrap_or_else(|| panic!("no lifting output for {}", self.cur_insn))
-                    .1,
+                    .2,
                 Statement::Jump { .. }
             ) {
                 // End of basic block
@@ -102,7 +108,7 @@ impl<'a> X86Lifter<'a> {
             }
         }
 
-        Ok(out.finish())
+        Ok(out.finish(self.cur_addr()))
     }
 
     fn lift_cur(&mut self, out: &mut Output) -> Result<()> {
@@ -582,7 +588,7 @@ impl RoughOpKind {
 }
 
 struct Output {
-    inner: Vec<(StatementAddr, Statement)>,
+    inner: Vec<(StatementAddr, NextStatementAddr, Statement)>,
     next_addr: StatementAddr,
 }
 
@@ -597,13 +603,31 @@ impl Output {
         }
     }
 
-    fn finish(self) -> Vec<(StatementAddr, Statement)> {
+    /// Sets the `NextStatementAddr` of the last output instruction. Doesn't do
+    /// anything if the output is empty.
+    fn set_next_of_last(&mut self, next_asm_addr: Addr64) {
+        if let Some((_, next_addr, _)) = self.inner.last_mut() {
+            *next_addr = NextStatementAddr(StatementAddr {
+                asm_addr: next_asm_addr,
+                ir_index: 0,
+            });
+        }
+    }
+
+    fn finish(
+        mut self,
+        next_asm_addr: Addr64,
+    ) -> Vec<(StatementAddr, NextStatementAddr, Statement)> {
+        self.set_next_of_last(next_asm_addr);
         self.inner
     }
 
     fn push(&mut self, stmt: Statement) {
-        self.inner.push((self.next_addr, stmt));
-        self.next_addr.ir_index += 1;
+        let mut next_addr = self.next_addr;
+        next_addr.ir_index += 1;
+        self.inner
+            .push((self.next_addr, NextStatementAddr(next_addr), stmt));
+        self.next_addr = next_addr;
     }
 
     fn save_expr_in_temp(&mut self, expr: Expr) -> Variable {

@@ -1,9 +1,8 @@
 use hecs::Entity;
 
 use crate::{
-    database::{Database, IntraBlockLinks},
-    ir::{Addr64, Statement},
-    // ir::{Addr64, Expr, JumpKind},
+    database::{Database, NextStatementAddr, StatementAddr},
+    ir::Statement,
     utils::insert_default_bundles,
 };
 
@@ -11,48 +10,11 @@ use crate::{
 pub enum CodeFlowKind {
     NextInsn,
     Jump,
+    BranchTrue,
+    BranchFalse,
     Call,
     Ret,
-    Special,
 }
-
-/*
-impl CodeFlowKind {
-    pub(crate) fn for_jump_kind(jk: JumpKind) -> Option<Self> {
-        Some(match jk {
-            JumpKind::Boring => Self::Jump,
-            JumpKind::Call => Self::Call,
-            JumpKind::Ret => Self::Ret,
-
-            JumpKind::NoDecode => {
-                return None;
-            }
-
-            JumpKind::Yield
-            | JumpKind::InvalICache
-            | JumpKind::FlushDCache
-            | JumpKind::SigILL
-            | JumpKind::SigTRAP
-            | JumpKind::SigSEGV
-            | JumpKind::SigBUS
-            | JumpKind::SigFPE
-            | JumpKind::SigFPE_IntDiv
-            | JumpKind::SigFPE_IntOvf
-            | JumpKind::Privileged
-            | JumpKind::Sys_syscall
-            | JumpKind::Sys_int32
-            | JumpKind::Sys_int128
-            | JumpKind::Sys_int129
-            | JumpKind::Sys_int130
-            | JumpKind::Sys_int145
-            | JumpKind::Sys_int210
-            | JumpKind::Sys_sysenter => Self::Special,
-
-            _ => todo!("jump kind {:?}", jk),
-        })
-    }
-}
-*/
 
 #[derive(Clone, Debug)]
 pub struct CodeFlowEdge {
@@ -77,104 +39,84 @@ pub fn add_code_flow(db: &mut Database) {
 
     let addr_to_entity = {
         let addr_to_entity = &db.addr_to_entity;
-        move |addr: Addr64| addr_to_entity.get(&addr).copied()
+        move |addr: StatementAddr| addr_to_entity.get(&addr).copied()
     };
 
-    for (entity, (stmt, links, out)) in db
+    for (entity, (stmt, next_addr, out)) in db
         .world
-        .query::<(&Statement, &IntraBlockLinks, &mut OutCodeFlowEdges)>()
+        .query::<(&Statement, &NextStatementAddr, &mut OutCodeFlowEdges)>()
         .into_iter()
     {
         let out = &mut out.0;
 
-        // let mut kind_of_edge_to_next = None;
+        let kind_of_edge_to_next;
 
-        /*
-        // TODO: calls inside expressions
         match stmt {
-            Statement::NoOp
-            | Statement::IMark { .. }
-            | Statement::AbiHint
-            | Statement::Put { .. }
-            | Statement::PutI
-            | Statement::WrTmp { .. }
+            Statement::Nop
+            | Statement::Assign { .. }
+            | Statement::InsertBits { .. }
             | Statement::Store { .. }
-            | Statement::CAS
-            | Statement::LLSC
-            | Statement::MemoryBusEvent
-            | Statement::LoadG
-            | Statement::StoreG => {
+            | Statement::Intrinsic => {
                 kind_of_edge_to_next = Some(CodeFlowKind::NextInsn);
             }
 
-            Statement::Dirty => {
+            Statement::Call { target } => {
                 out.push(CodeFlowEdge {
                     kind: CodeFlowKind::Call,
                     from: entity,
-                    to: None,              // TODO
-                    is_conditional: false, // TODO: can be conditional!
+                    to: target
+                        .as_const()
+                        .map(StatementAddr::new_first)
+                        .and_then(addr_to_entity),
+                    is_conditional: false,
                 });
+
+                kind_of_edge_to_next = Some(CodeFlowKind::NextInsn);
             }
 
-            // Conditional jumps
-            Statement::Exit { dst, jump_kind, .. } => {
-                let addr = u64::try_from(*dst).unwrap();
+            Statement::Jump {
+                target,
+                is_return,
+                condition,
+            } => {
+                let kind = if *is_return {
+                    CodeFlowKind::Ret
+                } else if condition.is_some() {
+                    CodeFlowKind::BranchTrue
+                } else {
+                    CodeFlowKind::Jump
+                };
 
                 out.push(CodeFlowEdge {
-                    kind: CodeFlowKind::for_jump_kind(*jump_kind).unwrap(),
+                    kind,
                     from: entity,
-                    to: addr_to_entity(addr),
-                    is_conditional: true,
+                    to: target
+                        .as_const()
+                        .map(StatementAddr::new_first)
+                        .and_then(addr_to_entity),
+                    is_conditional: condition.is_some(),
                 });
+
+                kind_of_edge_to_next = if condition.is_some() {
+                    Some(CodeFlowKind::BranchFalse)
+                } else {
+                    None
+                };
             }
-
-            Statement::EndOfBlock { next, jump_kind } => match (next, *jump_kind) {
-                (Expr::Const(_), JumpKind::NoDecode) => {
-                    // No next instruction
-                }
-
-                (Expr::Const(next), jk) => {
-                    let kind = CodeFlowKind::for_jump_kind(jk).unwrap();
-                    out.push(CodeFlowEdge {
-                        kind,
-                        from: entity,
-                        to: addr_to_entity((*next).try_into().unwrap()),
-                        is_conditional: false,
-                    });
-                }
-
-                (Expr::RdTmp(_) | Expr::Get { .. } | Expr::GetI { .. }, jk) => {
-                    // Dynamic jump
-                    let kind = CodeFlowKind::for_jump_kind(jk).unwrap();
-                    out.push(CodeFlowEdge {
-                        kind,
-                        from: entity,
-                        to: None,
-                        is_conditional: false,
-                    });
-                }
-
-                _ => todo!("code flow for (next={:?}, jump_kind={:?})", next, jump_kind),
-            },
         }
 
         if let Some(kind) = kind_of_edge_to_next {
-            debug_assert!(!matches!(stmt, Statement::EndOfBlock { .. }));
-
             let is_conditional = !out.is_empty();
 
             out.push(CodeFlowEdge {
                 kind,
                 from: entity,
-                to: Some(
-                    links
-                        .next
-                        .expect("missing next link for statement not at the end of a block"),
-                ),
+                // If we can't find the entity for the next instruction, leave
+                // the `to` as `None`.
+                to: addr_to_entity(next_addr.0),
                 is_conditional,
             });
         }
-        */
 
         // Add the reverse edges
         for edge in out {

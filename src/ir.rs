@@ -48,6 +48,15 @@ pub enum SimpleExpr {
     Variable(Variable),
 }
 
+impl SimpleExpr {
+    pub fn as_const(self) -> Option<Const> {
+        match self {
+            SimpleExpr::Const(x) => Some(x),
+            _ => None,
+        }
+    }
+}
+
 impl From<Const> for SimpleExpr {
     fn from(value: Const) -> Self {
         Self::Const(value)
@@ -71,6 +80,7 @@ pub enum UnaryOpKind {
     Not,
 }
 
+#[derive(Clone, Debug)]
 pub struct UnaryOp {
     pub op: UnaryOpKind,
     pub value: SimpleExpr,
@@ -91,6 +101,7 @@ pub enum BinaryOpKind {
     Xor,
 }
 
+#[derive(Clone, Debug)]
 pub struct BinaryOp {
     pub op: BinaryOpKind,
     pub lhs: SimpleExpr,
@@ -111,6 +122,7 @@ pub enum CompareOpKind {
     GreaterThanOrEqualSigned,
 }
 
+#[derive(Clone, Debug)]
 pub struct CompareOp {
     pub kind: CompareOpKind,
     pub lhs: SimpleExpr,
@@ -125,6 +137,7 @@ pub enum ComplexX86ConditionCode {
     Le,
 }
 
+#[derive(Clone, Debug)]
 pub enum Expr {
     Unknown,
     Simple(SimpleExpr),
@@ -148,12 +161,7 @@ where
     }
 }
 
-pub enum BranchKind {
-    Jump,
-    ConditionalTrue,
-    ConditionalFalse,
-}
-
+#[derive(Clone, Debug)]
 pub enum Statement {
     Nop,
 

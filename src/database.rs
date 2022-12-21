@@ -2,23 +2,23 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
 use hecs::{Bundle, Entity, World};
-use itertools::Itertools;
 
 use crate::{
     analysis::code_flow::{InCodeFlowEdges, OutCodeFlowEdges},
-    ir::{Addr64, SimpleExpr, Statement},
+    ir::{Addr64, Statement},
     lifting::X86Lifter,
 };
 
 #[derive(Default)]
 pub struct Database {
     pub world: World,
-    pub addr_to_entity: HashMap<Addr64, Entity>,
+    pub addr_to_entity: HashMap<StatementAddr, Entity>,
 }
 
 impl Database {
     fn contains_addr(&self, addr: Addr64) -> bool {
-        self.addr_to_entity.contains_key(&addr)
+        self.addr_to_entity
+            .contains_key(&StatementAddr::new_first(addr))
     }
 
     pub fn add_func(&mut self, base_addr: Addr64, buf: &[u8], start_addr: Addr64) -> Result<()> {
@@ -45,20 +45,14 @@ impl Database {
                     || !(base_addr..buf_end_addr).contains(&stmt_addr)
             })?;
 
-            if let Some((_, last_stmt)) = stmts.last() {
+            if let Some((_, _, last_stmt)) = stmts.last() {
                 match last_stmt {
                     Statement::Jump {
-                        is_return: true, ..
-                    } => {
-                        // Don't continue past a return statement.
-                    }
-
-                    Statement::Jump {
                         target,
-                        is_return: false,
+                        is_return,
                         condition,
                     } => {
-                        // It's a conditional branch. Continue to the
+                        // If it's a conditional branch, then continue to the
                         // instruction right after the block, which is also the
                         // lifter's current address right after it decoded the
                         // block.
@@ -66,9 +60,12 @@ impl Database {
                             todo.push(lifter.cur_addr());
                         }
 
-                        // Either way, if it's a known static target...
-                        if let SimpleExpr::Const(target) = target {
-                            todo.push(*target);
+                        // Either way, if it's not a return and it has a known
+                        // static target...
+                        if !*is_return {
+                            if let Some(target) = target.as_const() {
+                                todo.push(target);
+                            }
                         }
                     }
 
@@ -89,57 +86,29 @@ impl Database {
         Ok(())
     }
 
-    fn add_block(&mut self, stmts: Vec<(StatementAddr, Statement)>) {
-        let entities = stmts
-            .into_iter()
-            .map(|(addr, stmt)| {
-                let entity = self.world.spawn(StatementBundle {
-                    stmt,
-                    addr,
-                    links: Default::default(),
-                    out_code_flow: Default::default(),
-                    in_code_flow: Default::default(),
-                });
+    fn add_block(&mut self, stmts: Vec<(StatementAddr, NextStatementAddr, Statement)>) {
+        for (addr, next_addr, stmt) in stmts {
+            let entity = self.world.spawn(StatementBundle {
+                stmt,
+                addr,
+                next_addr,
+                out_code_flow: Default::default(),
+                in_code_flow: Default::default(),
+            });
 
-                if let StatementAddr {
-                    asm_addr,
-                    ir_index: 0,
-                } = addr
-                {
-                    let old_entity = self.addr_to_entity.insert(asm_addr, entity);
+            let old_entity = self.addr_to_entity.insert(addr, entity);
 
-                    if let Some(old_entity) = old_entity {
-                        panic!(
-                            "Statement @ {:#x} was lifted twice (entities {:?} and {:?})",
-                            asm_addr, old_entity, entity
-                        );
-                    }
-                }
-
-                entity
-            })
-            .collect::<Vec<_>>();
-
-        // Preserve the order in the block by linking the statements to each other.
-        let mut links_query = self.world.query::<&mut IntraBlockLinks>();
-        let mut links_view = links_query.view();
-        for (a, b) in entities.into_iter().tuple_windows() {
-            let [a_links, b_links] = links_view.get_mut_n([a, b]);
-            let a_links = a_links.unwrap();
-            let b_links = b_links.unwrap();
-            a_links.next = Some(b);
-            b_links.prev = Some(a);
+            if let Some(old_entity) = old_entity {
+                panic!(
+                    "Statement @ {:?} was lifted twice (entities {:?} and {:?})",
+                    addr, old_entity, entity
+                );
+            }
         }
     }
 }
 
-#[derive(Default)]
-pub struct IntraBlockLinks {
-    pub prev: Option<Entity>,
-    pub next: Option<Entity>,
-}
-
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct StatementAddr {
     /// Address of the original assembly instruction
     pub asm_addr: Addr64,
@@ -147,11 +116,28 @@ pub struct StatementAddr {
     pub ir_index: usize,
 }
 
+impl StatementAddr {
+    /// A convenience method for creating a `StatementAddr` at the beginning of
+    /// an assembly instruction's IL.
+    pub fn new_first(asm_addr: Addr64) -> Self {
+        Self {
+            asm_addr,
+            ir_index: 0,
+        }
+    }
+}
+
+/// The address of the statement directly succeeding this one according to the
+/// order of the original file. (It might not actually be the address of a valid
+/// statement, though.)
+#[derive(Clone, Copy, Debug)]
+pub struct NextStatementAddr(pub StatementAddr);
+
 #[derive(Bundle)]
 struct StatementBundle {
     stmt: Statement,
     addr: StatementAddr,
-    links: IntraBlockLinks,
+    next_addr: NextStatementAddr,
     // Analysis components. We include these at statement spawn time to improve
     // performance.
     out_code_flow: OutCodeFlowEdges,
