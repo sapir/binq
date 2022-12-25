@@ -22,6 +22,13 @@ where
             self.0.push((key, value));
         }
     }
+
+    pub fn get<'a>(&'a self, key: &'a K) -> impl Iterator<Item = &V> + 'a {
+        self.0
+            .iter()
+            .filter(move |(k, _v)| k == key)
+            .map(|(_k, v)| v)
+    }
 }
 
 impl<K, V> Default for SmallMultiMap<K, V> {

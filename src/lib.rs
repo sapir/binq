@@ -5,6 +5,7 @@ mod analysis;
 mod database;
 mod ir;
 mod lifting;
+mod query;
 mod utils;
 
 use pyo3::prelude::*;
@@ -30,6 +31,16 @@ impl PyDatabase {
 
     fn analyze(&mut self) {
         analysis::analyze(&mut self.0);
+    }
+
+    // TODO: remove
+    fn test_search(&mut self) {
+        use query::{search, Expr};
+
+        search(
+            &mut self.0,
+            &Expr::Deref(Box::new(Expr::Sum(vec![Expr::Any, Expr::Const(0x10)]))),
+        );
     }
 }
 
