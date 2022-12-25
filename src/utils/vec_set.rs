@@ -14,10 +14,6 @@ where
             self.0.push(value);
         }
     }
-
-    pub fn iter(&self) -> impl Iterator<Item = &T> {
-        self.0.iter()
-    }
 }
 
 impl<T> Default for VecSet<T> {

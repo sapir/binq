@@ -8,7 +8,7 @@ use crate::{
     database::{NextStatementAddr, StatementAddr},
     ir::{
         Addr64, BinaryOp, BinaryOpKind, CompareOp, CompareOpKind, ComplexX86ConditionCode, Const,
-        Expr, Register, SimpleExpr, Statement, UnaryOp, UnaryOpKind, Variable,
+        Expr, Register, SimpleExpr, Statement, Temp, UnaryOp, UnaryOpKind, Variable,
     },
 };
 
@@ -113,6 +113,9 @@ impl<'a> X86Lifter<'a> {
 
     fn lift_cur(&mut self, out: &mut Output) -> Result<()> {
         use Mnemonic::*;
+
+        let temp_before = Temp::peek_next_id();
+        let mut is_jmp = false;
 
         self.unimpl_flags = self.cur_insn.rflags_modified();
 
@@ -278,6 +281,7 @@ impl<'a> X86Lifter<'a> {
                     is_return: false,
                     condition,
                 });
+                is_jmp = true;
             }
 
             // setp and setnp aren't implemented
@@ -316,6 +320,7 @@ impl<'a> X86Lifter<'a> {
                 let target = self.op_to_expr(out, 0);
                 let target = out.expr_to_simple(target);
                 out.push(Statement::Call { target });
+                is_jmp = true;
             }
 
             Ret => {
@@ -326,6 +331,7 @@ impl<'a> X86Lifter<'a> {
                     is_return: true,
                     condition: None,
                 });
+                is_jmp = true;
             }
 
             Nop | Endbr32 | Endbr64 => {
@@ -378,6 +384,11 @@ impl<'a> X86Lifter<'a> {
 
         for f in iter_rflags_bits(self.unimpl_flags) {
             println!("unimplemented flag: {:?} in {}", f, self.cur_insn);
+        }
+
+        let temp_after = Temp::peek_next_id();
+        if temp_before != temp_after && !is_jmp {
+            out.push(Statement::ClearTemps);
         }
 
         Ok(())

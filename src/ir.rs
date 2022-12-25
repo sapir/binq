@@ -13,6 +13,10 @@ impl Temp {
     pub fn new() -> Self {
         Self(NEXT_TEMP.fetch_add(1, Ordering::SeqCst))
     }
+
+    pub(crate) fn peek_next_id() -> u64 {
+        NEXT_TEMP.load(Ordering::SeqCst)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -196,4 +200,6 @@ pub enum Statement {
 
     // TODO: affected regs
     Intrinsic,
+
+    ClearTemps,
 }

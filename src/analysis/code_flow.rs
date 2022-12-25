@@ -51,6 +51,7 @@ pub fn add_code_flow(db: &mut Database) {
 
         match stmt {
             Statement::Nop
+            | Statement::ClearTemps
             | Statement::Assign { .. }
             | Statement::Store { .. }
             | Statement::Intrinsic => {

@@ -34,6 +34,7 @@ dependencies = [
  "iced-x86",
  "phf",
  "pyo3",
+ "smallvec",
 ]
 
 [[package]]
