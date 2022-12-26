@@ -1,5 +1,8 @@
 // TODO: remove
 #![allow(dead_code)]
+#![allow(clippy::needless_late_init)]
+#![allow(clippy::collapsible_match)]
+#![allow(clippy::single_match)]
 
 mod analysis;
 mod database;
