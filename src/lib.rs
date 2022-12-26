@@ -38,11 +38,14 @@ impl PyDatabase {
 
     // TODO: remove
     fn test_search(&mut self) {
-        use query::{search, Expr};
+        use query::{search, Expr, ExprMatchFilter, Field};
 
         search(
             &mut self.0,
-            &Expr::Deref(Box::new(Expr::Sum(vec![Expr::Any, Expr::Const(0x10)]))),
+            &[ExprMatchFilter {
+                field: Field::Value,
+                expr: Expr::Sum(vec![Expr::Any, Expr::Const(0x10)]),
+            }],
         );
     }
 }
