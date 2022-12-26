@@ -98,8 +98,10 @@ impl Database {
                 stmt,
                 addr,
                 next_addr,
-                out_code_flow: Default::default(),
-                in_code_flow: Default::default(),
+                out_code_flow_by_addr: Default::default(),
+                in_code_flow_by_addr: Default::default(),
+                out_code_flow_by_entity: Default::default(),
+                in_code_flow_by_entity: Default::default(),
                 value_sources: Default::default(),
             });
 
@@ -153,7 +155,9 @@ struct StatementBundle {
     next_addr: NextStatementAddr,
     // Analysis components. We include these at statement spawn time to improve
     // performance.
-    out_code_flow: OutCodeFlowEdges,
-    in_code_flow: InCodeFlowEdges,
+    out_code_flow_by_addr: OutCodeFlowEdges<StatementAddr>,
+    in_code_flow_by_addr: InCodeFlowEdges<StatementAddr>,
+    out_code_flow_by_entity: OutCodeFlowEdges<Entity>,
+    in_code_flow_by_entity: InCodeFlowEdges<Entity>,
     value_sources: ValueSources,
 }

@@ -1,7 +1,4 @@
-use std::collections::{HashMap, HashSet};
-
-use hecs::Entity;
-use smallvec::SmallVec;
+use hecs::{Entity, World};
 
 use crate::{
     database::{Database, StatementAddr},
@@ -34,16 +31,12 @@ fn assigned_var(stmt: &Statement) -> Option<Variable> {
     }
 }
 
-fn get_followed_dst_nodes<'a>(
-    db: &'a Database,
-    out_edges: &'a OutCodeFlowEdges,
-) -> impl Iterator<Item = Entity> + 'a {
-    out_edges
-        .0
-        .iter()
-        .filter(|edge| data_flow_follows_edge_kind(edge.kind))
-        .filter_map(|edge| edge.to.and_then(|to| db.addr_to_entity.get(&to).copied()))
-}
+struct IsFunctionStart(bool);
+
+/// Used to mark nodes reached in the current graph traversal.
+struct Tag(u64);
+
+struct FollowedOutEdges(Vec<Entity>);
 
 pub fn analyze_data_flow(db: &mut Database) {
     let assigns: Vec<(Entity, Variable, StatementAddr)> = db
@@ -53,51 +46,76 @@ pub fn analyze_data_flow(db: &mut Database) {
         .filter_map(|(entity, (stmt, addr))| assigned_var(stmt).map(|var| (entity, var, *addr)))
         .collect();
 
-    let function_starts: HashSet<Entity> = db
-        .world
-        .query_mut::<&InCodeFlowEdges>()
-        .into_iter()
-        .filter(|(_entity, in_edges)| {
-            in_edges
+    // Build storage for some temporary components in a separate hecs World, but
+    // using the same entities.
+    let mut tmp_world = World::new();
+
+    // Spawn components, filling in IsFunctionStart.
+    for (entity, in_edges) in db.world.query_mut::<&InCodeFlowEdges<Entity>>() {
+        let is_function_start = in_edges
+            .0
+            .iter()
+            .any(|e| matches!(e.kind, CodeFlowKind::Call));
+
+        tmp_world.spawn_at(
+            entity,
+            (
+                Tag(0),
+                FollowedOutEdges(vec![]),
+                IsFunctionStart(is_function_start),
+            ),
+        );
+    }
+
+    // Fill in FollowedOutEdges. This is a separate step because it uses the
+    // value of InFunctionStart from the previous iteration.
+    {
+        let mut edges_query = tmp_world.query::<&mut FollowedOutEdges>();
+        let mut edges_view = edges_query.view();
+
+        let mut func_start_query = tmp_world.query::<&IsFunctionStart>();
+        let mut func_start_view = func_start_query.view();
+
+        for (entity, out_edges) in db.world.query_mut::<&OutCodeFlowEdges<Entity>>() {
+            let followed_out_edges = edges_view.get_mut(entity).unwrap();
+            followed_out_edges.0 = out_edges
                 .0
                 .iter()
-                .any(|e| matches!(e.kind, CodeFlowKind::Call))
-        })
-        .map(|(entity, _)| entity)
-        .collect();
+                .filter(|edge| data_flow_follows_edge_kind(edge.kind))
+                .filter_map(|edge| edge.to)
+                .filter(|to| !func_start_view.get_mut(*to).unwrap().0)
+                .collect();
+        }
+    }
 
-    let graph: HashMap<Entity, SmallVec<[Entity; 2]>> = {
-        db.world
-            .query::<&OutCodeFlowEdges>()
-            .into_iter()
-            .map(|(entity, out_edges)| {
-                (
-                    entity,
-                    get_followed_dst_nodes(db, out_edges)
-                        .filter(|to| !function_starts.contains(to))
-                        .collect(),
-                )
-            })
-            .collect()
-    };
+    let mut cur_tag = 0;
 
-    let mut todo: UniqueStack<Entity> = UniqueStack::new();
+    let mut todo: Vec<Entity> = vec![];
 
     let mut query = db.world.query::<(&Statement, &mut ValueSources)>();
     let mut view = query.view();
+
+    let mut tmp_query = tmp_world.query_mut::<(&FollowedOutEdges, &mut Tag)>();
+    let mut tmp_view = tmp_query.view();
 
     for (assign_entity, var, assign_addr) in assigns {
         // Traverse graph, stopping at any assignment to the same variable. Add
         // this statement as the variable's source for all the traversed nodes.
 
-        todo.clear();
+        cur_tag += 1;
 
-        for node in graph.get(&assign_entity).into_iter().flatten().copied() {
-            todo.push(node);
-        }
+        todo.clear();
+        todo.extend_from_slice(&tmp_view.get_mut(assign_entity).unwrap().0 .0);
 
         while let Some(cur) = todo.pop() {
             let (stmt, value_sources) = view.get_mut(cur).unwrap();
+            let (followed_out_edges, tag) = tmp_view.get_mut(cur).unwrap();
+
+            if tag.0 == cur_tag {
+                continue;
+            }
+
+            tag.0 = cur_tag;
 
             if matches!(stmt, Statement::ClearTemps) && matches!(var, Variable::Temp(_)) {
                 continue;
@@ -112,9 +130,7 @@ pub fn analyze_data_flow(db: &mut Database) {
             // Continue the traversal, but stop at any assignment to the same
             // variable.
             if assigned_var(stmt) != Some(var) {
-                for node in graph.get(&cur).into_iter().flatten().copied() {
-                    todo.push(node);
-                }
+                todo.extend_from_slice(&followed_out_edges.0);
             }
         }
     }
@@ -188,37 +204,5 @@ fn simple_expr_is_var(expr: &SimpleExpr, var: Variable) -> bool {
     match expr {
         SimpleExpr::Const(_) => false,
         SimpleExpr::Variable(x) => var == *x,
-    }
-}
-
-struct UniqueStack<T> {
-    set: HashSet<T>,
-    stack: Vec<T>,
-}
-
-impl<T> UniqueStack<T>
-where
-    T: Clone + Eq + std::hash::Hash,
-{
-    pub fn new() -> Self {
-        Self {
-            set: HashSet::new(),
-            stack: vec![],
-        }
-    }
-
-    pub fn clear(&mut self) {
-        self.set.clear();
-        self.stack.clear();
-    }
-
-    pub fn push(&mut self, value: T) {
-        if self.set.insert(value.clone()) {
-            self.stack.push(value);
-        }
-    }
-
-    pub fn pop(&mut self) -> Option<T> {
-        self.stack.pop()
     }
 }
