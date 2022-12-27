@@ -29,6 +29,27 @@ struct ExprMatcherAt<'db, 'view, 'query, 'a> {
     matcher: &'a mut ExprMatcher<'db, 'view, 'query>,
 }
 
+impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
+    fn new(
+        addr: StatementAddr,
+        value_sources: &'a ValueSources,
+        matcher: &'a mut ExprMatcher<'db, 'view, 'query>,
+    ) -> Self {
+        matcher.visited_addr_stack.push(addr);
+        Self {
+            addr,
+            value_sources,
+            matcher,
+        }
+    }
+}
+
+impl Drop for ExprMatcherAt<'_, '_, '_, '_> {
+    fn drop(&mut self) {
+        assert_eq!(self.matcher.visited_addr_stack.pop(), Some(self.addr));
+    }
+}
+
 impl ExprMatcherAt<'_, '_, '_, '_> {
     fn match_expr(&mut self, pattern_expr: &Expr, ir_expr: &IrExpr) -> bool {
         match pattern_expr {
@@ -138,18 +159,11 @@ impl ExprMatcherAt<'_, '_, '_, '_> {
         else { panic!("source isn't an Assign statement") };
         debug_assert_eq!(*lhs, ir_var);
 
-        self.matcher.visited_addr_stack.push(source_addr);
-        let result = ExprMatcherAt {
-            addr: source_addr,
-            value_sources: source_value_sources,
-            matcher: self.matcher,
-        }
-        .match_expr(pattern_expr, rhs);
-        assert_eq!(self.matcher.visited_addr_stack.pop(), Some(source_addr));
-        result
+        ExprMatcherAt::new(source_addr, source_value_sources, self.matcher)
+            .match_expr(pattern_expr, rhs)
     }
 
-    fn get_inner_simple_expr<'a>(&mut self, expr: &'a IrExpr) -> Option<&'a SimpleExpr> {
+    fn get_inner_simple_expr<'b>(&mut self, expr: &'b IrExpr) -> Option<&'b SimpleExpr> {
         match expr {
             IrExpr::Unknown => None,
 
@@ -239,12 +253,7 @@ impl<'db, 'view, 'query> ExprMatcher<'db, 'view, 'query> {
         pattern_expr: &Expr,
         ir_expr: &IrExpr,
     ) -> bool {
-        ExprMatcherAt {
-            addr,
-            value_sources,
-            matcher: self,
-        }
-        .match_expr(pattern_expr, ir_expr)
+        ExprMatcherAt::new(addr, value_sources, self).match_expr(pattern_expr, ir_expr)
     }
 
     pub fn match_simple_expr(
@@ -254,11 +263,6 @@ impl<'db, 'view, 'query> ExprMatcher<'db, 'view, 'query> {
         pattern_expr: &Expr,
         ir_expr: &SimpleExpr,
     ) -> bool {
-        ExprMatcherAt {
-            addr,
-            value_sources,
-            matcher: self,
-        }
-        .match_simple_expr(pattern_expr, ir_expr)
+        ExprMatcherAt::new(addr, value_sources, self).match_simple_expr(pattern_expr, ir_expr)
     }
 }
