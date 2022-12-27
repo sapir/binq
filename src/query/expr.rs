@@ -23,46 +23,27 @@ fn get_single_value_source(sources: &ValueSources, var: Variable) -> Option<Stat
         .copied()
 }
 
-pub(super) struct ExprMatcher<'db, 'view, 'query> {
-    database: &'db Database,
-    view: &'view View<'view, (&'query Statement, &'query ValueSources)>,
-    visited_addr_stack: Vec<StatementAddr>,
+struct ExprMatcherAt<'db, 'view, 'query, 'a> {
+    addr: StatementAddr,
+    value_sources: &'a ValueSources,
+    matcher: &'a mut ExprMatcher<'db, 'view, 'query>,
 }
 
-impl<'db, 'view, 'query> ExprMatcher<'db, 'view, 'query> {
-    pub fn new(
-        database: &'db Database,
-        view: &'view View<'view, (&'query Statement, &'query ValueSources)>,
-    ) -> Self {
-        Self {
-            database,
-            view,
-            visited_addr_stack: vec![],
-        }
-    }
-
-    pub fn match_expr(
-        &mut self,
-        addr: StatementAddr,
-        value_sources: &ValueSources,
-        pattern_expr: &Expr,
-        ir_expr: &IrExpr,
-    ) -> bool {
+impl ExprMatcherAt<'_, '_, '_, '_> {
+    fn match_expr(&mut self, pattern_expr: &Expr, ir_expr: &IrExpr) -> bool {
         match pattern_expr {
             Expr::Any => true,
 
             Expr::Const(_) => {
-                if let Some(inner) = self.get_inner_simple_expr(addr, value_sources, ir_expr) {
-                    self.match_simple_expr(addr, value_sources, pattern_expr, inner)
+                if let Some(inner) = self.get_inner_simple_expr(ir_expr) {
+                    self.match_simple_expr(pattern_expr, inner)
                 } else {
                     false
                 }
             }
 
             Expr::Deref(pat_inner) => match ir_expr {
-                IrExpr::Deref(ir_inner) => {
-                    self.match_simple_expr(addr, value_sources, pat_inner, ir_inner)
-                }
+                IrExpr::Deref(ir_inner) => self.match_simple_expr(pat_inner, ir_inner),
 
                 _ => false,
             },
@@ -71,7 +52,7 @@ impl<'db, 'view, 'query> ExprMatcher<'db, 'view, 'query> {
                 match inner_patterns.as_slice() {
                     [] => false,
 
-                    [inner_pattern] => self.match_expr(addr, value_sources, inner_pattern, ir_expr),
+                    [inner_pattern] => self.match_expr(inner_pattern, ir_expr),
 
                     _ => {
                         let expected_op = match pattern_expr {
@@ -83,12 +64,7 @@ impl<'db, 'view, 'query> ExprMatcher<'db, 'view, 'query> {
                         if let IrExpr::BinaryOp(BinaryOp { op, lhs, rhs }) = ir_expr {
                             if *op == expected_op {
                                 for (lhs_index, lhs_pattern) in inner_patterns.iter().enumerate() {
-                                    if !self.match_simple_expr(
-                                        addr,
-                                        value_sources,
-                                        lhs_pattern,
-                                        lhs,
-                                    ) {
+                                    if !self.match_simple_expr(lhs_pattern, lhs) {
                                         continue;
                                     };
 
@@ -105,12 +81,7 @@ impl<'db, 'view, 'query> ExprMatcher<'db, 'view, 'query> {
                                         _ => unreachable!(),
                                     };
 
-                                    if self.match_simple_expr(
-                                        addr,
-                                        value_sources,
-                                        &rhs_pattern,
-                                        rhs,
-                                    ) {
+                                    if self.match_simple_expr(&rhs_pattern, rhs) {
                                         return true;
                                     }
                                 }
@@ -124,19 +95,11 @@ impl<'db, 'view, 'query> ExprMatcher<'db, 'view, 'query> {
         }
     }
 
-    pub fn match_simple_expr(
-        &mut self,
-        addr: StatementAddr,
-        value_sources: &ValueSources,
-        pattern_expr: &Expr,
-        ir_expr: &SimpleExpr,
-    ) -> bool {
+    fn match_simple_expr(&mut self, pattern_expr: &Expr, ir_expr: &SimpleExpr) -> bool {
         match (pattern_expr, ir_expr) {
             (Expr::Any, _) => true,
 
-            (_, SimpleExpr::Variable(ir_var)) => {
-                self.match_var(addr, value_sources, pattern_expr, *ir_var)
-            }
+            (_, SimpleExpr::Variable(ir_var)) => self.match_var(pattern_expr, *ir_var),
 
             (Expr::Const(pat_x), SimpleExpr::Const(ir_x)) => *pat_x == *ir_x,
 
@@ -144,7 +107,7 @@ impl<'db, 'view, 'query> ExprMatcher<'db, 'view, 'query> {
 
             (Expr::Sum(terms), ir_expr) => {
                 if let [term] = &terms[..] {
-                    self.match_simple_expr(addr, value_sources, term, ir_expr)
+                    self.match_simple_expr(term, ir_expr)
                 } else {
                     false
                 }
@@ -152,7 +115,7 @@ impl<'db, 'view, 'query> ExprMatcher<'db, 'view, 'query> {
 
             (Expr::Product(factors), ir_expr) => {
                 if let [factor] = &factors[..] {
-                    self.match_simple_expr(addr, value_sources, factor, ir_expr)
+                    self.match_simple_expr(factor, ir_expr)
                 } else {
                     false
                 }
@@ -160,39 +123,33 @@ impl<'db, 'view, 'query> ExprMatcher<'db, 'view, 'query> {
         }
     }
 
-    fn match_var(
-        &mut self,
-        addr: StatementAddr,
-        value_sources: &ValueSources,
-        pattern_expr: &Expr,
-        ir_var: Variable,
-    ) -> bool {
-        let Some(source_addr) = get_single_value_source(value_sources, ir_var)
+    fn match_var(&mut self, pattern_expr: &Expr, ir_var: Variable) -> bool {
+        let Some(source_addr) = get_single_value_source(self.value_sources, ir_var)
         else { return false };
 
-        if self.visited_addr_stack.contains(&source_addr) {
+        if self.matcher.visited_addr_stack.contains(&source_addr) {
             // Loop!
             return false;
         }
 
-        let entity = self.database.addr_to_entity[&source_addr];
-        let (source_stmt, source_value_sources) = self.view.get(entity).unwrap();
+        let entity = self.matcher.database.addr_to_entity[&source_addr];
+        let (source_stmt, source_value_sources) = self.matcher.view.get(entity).unwrap();
         let Statement::Assign { lhs, rhs } = source_stmt
         else { panic!("source isn't an Assign statement") };
         debug_assert_eq!(*lhs, ir_var);
 
-        self.visited_addr_stack.push(source_addr);
-        let result = self.match_expr(addr, source_value_sources, pattern_expr, rhs);
-        assert_eq!(self.visited_addr_stack.pop(), Some(source_addr));
+        self.matcher.visited_addr_stack.push(source_addr);
+        let result = ExprMatcherAt {
+            addr: source_addr,
+            value_sources: source_value_sources,
+            matcher: self.matcher,
+        }
+        .match_expr(pattern_expr, rhs);
+        assert_eq!(self.matcher.visited_addr_stack.pop(), Some(source_addr));
         result
     }
 
-    fn get_inner_simple_expr<'a>(
-        &mut self,
-        addr: StatementAddr,
-        value_sources: &ValueSources,
-        expr: &'a IrExpr,
-    ) -> Option<&'a SimpleExpr> {
+    fn get_inner_simple_expr<'a>(&mut self, expr: &'a IrExpr) -> Option<&'a SimpleExpr> {
         match expr {
             IrExpr::Unknown => None,
 
@@ -234,11 +191,9 @@ impl<'db, 'view, 'query> ExprMatcher<'db, 'view, 'query> {
                 };
 
                 let const_pattern = Expr::Const(identity);
-                if self.match_simple_expr(addr, value_sources, &const_pattern, rhs) {
+                if self.match_simple_expr(&const_pattern, rhs) {
                     return Some(lhs);
-                } else if is_commutative
-                    && self.match_simple_expr(addr, value_sources, &const_pattern, lhs)
-                {
+                } else if is_commutative && self.match_simple_expr(&const_pattern, lhs) {
                     return Some(rhs);
                 }
 
@@ -256,5 +211,54 @@ impl<'db, 'view, 'query> ExprMatcher<'db, 'view, 'query> {
             | IrExpr::X86Flag { .. }
             | IrExpr::ComplexX86ConditionCode(_) => None,
         }
+    }
+}
+
+pub(super) struct ExprMatcher<'db, 'view, 'query> {
+    database: &'db Database,
+    view: &'view View<'view, (&'query Statement, &'query ValueSources)>,
+    visited_addr_stack: Vec<StatementAddr>,
+}
+
+impl<'db, 'view, 'query> ExprMatcher<'db, 'view, 'query> {
+    pub fn new(
+        database: &'db Database,
+        view: &'view View<'view, (&'query Statement, &'query ValueSources)>,
+    ) -> Self {
+        Self {
+            database,
+            view,
+            visited_addr_stack: vec![],
+        }
+    }
+
+    pub fn match_expr(
+        &mut self,
+        addr: StatementAddr,
+        value_sources: &ValueSources,
+        pattern_expr: &Expr,
+        ir_expr: &IrExpr,
+    ) -> bool {
+        ExprMatcherAt {
+            addr,
+            value_sources,
+            matcher: self,
+        }
+        .match_expr(pattern_expr, ir_expr)
+    }
+
+    pub fn match_simple_expr(
+        &mut self,
+        addr: StatementAddr,
+        value_sources: &ValueSources,
+        pattern_expr: &Expr,
+        ir_expr: &SimpleExpr,
+    ) -> bool {
+        ExprMatcherAt {
+            addr,
+            value_sources,
+            matcher: self,
+        }
+        .match_simple_expr(pattern_expr, ir_expr)
     }
 }
