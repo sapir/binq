@@ -5,6 +5,7 @@ import cle
 from tqdm import tqdm
 
 import binq
+from binq import Expr as E
 
 
 def lift_object(db, object: cle.Backend):
@@ -29,4 +30,6 @@ bin = cle.Loader(filename)
 print("lifting")
 lift_object(db, bin.main_object)
 db.analyze()
-db.test_search()
+
+for asm_addr, il_index in db.search({"value": E.ANY + E(0x10)}):
+    print(f"{asm_addr:#x}/{il_index}")

@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use crate::{
     analysis::data_flow::ValueSources,
     database::StatementAddr,
@@ -12,6 +14,20 @@ pub enum Field {
     StoreAddr,
     Target,
     Condition,
+}
+
+impl FromStr for Field {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "value" => Ok(Self::Value),
+            "store_addr" => Ok(Self::StoreAddr),
+            "target" => Ok(Self::Target),
+            "condition" => Ok(Self::Condition),
+            _ => Err(()),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

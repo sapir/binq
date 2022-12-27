@@ -11,9 +11,106 @@ mod lifting;
 mod query;
 mod utils;
 
-use pyo3::{exceptions::PyValueError, prelude::*};
+use database::StatementAddr;
+use pyo3::{
+    exceptions::PyValueError,
+    prelude::*,
+    types::{PyDict, PyLong},
+};
+use query::{search, Expr, ExprMatchFilter, Field};
 
 use self::{database::Database, ir::Addr64};
+
+#[pyclass(name = "Expr")]
+#[derive(Clone)]
+struct PyExpr(Expr);
+
+#[pymethods]
+impl PyExpr {
+    #[classattr]
+    const ANY: Self = Self(Expr::Any);
+
+    #[new]
+    fn new(obj: &PyAny) -> PyResult<Self> {
+        if obj.is_instance_of::<PyLong>()? {
+            Ok(Self(Expr::Const(obj.extract()?)))
+        } else {
+            Err(PyValueError::new_err("Bad expression value"))
+        }
+    }
+
+    fn deref(&self) -> Self {
+        Self(Expr::Deref(Box::new(self.0.clone())))
+    }
+
+    fn __add__(&self, other: &Self) -> Self {
+        let mut v = Vec::with_capacity(
+            match &self.0 {
+                Expr::Sum(v) => v.len(),
+                _ => 1,
+            } + match &other.0 {
+                Expr::Sum(v) => v.len(),
+                _ => 1,
+            },
+        );
+
+        match &self.0 {
+            Expr::Sum(v2) => {
+                v.extend_from_slice(v2);
+            }
+
+            other => {
+                v.push(other.clone());
+            }
+        }
+
+        match &other.0 {
+            Expr::Sum(v2) => {
+                v.extend_from_slice(v2);
+            }
+
+            other => {
+                v.push(other.clone());
+            }
+        }
+
+        Self(Expr::Sum(v))
+    }
+
+    fn __mul__(&self, other: &Self) -> Self {
+        let mut v = Vec::with_capacity(
+            match &self.0 {
+                Expr::Product(v) => v.len(),
+                _ => 1,
+            } + match &other.0 {
+                Expr::Product(v) => v.len(),
+                _ => 1,
+            },
+        );
+
+        match &self.0 {
+            Expr::Product(v2) => {
+                v.extend_from_slice(v2);
+            }
+
+            other => {
+                v.push(other.clone());
+            }
+        }
+
+        match &other.0 {
+            Expr::Product(v2) => {
+                v.extend_from_slice(v2);
+            }
+
+            other => {
+                v.push(other.clone());
+            }
+        }
+
+        Self(Expr::Product(v))
+    }
+}
 
 #[pyclass(name = "Database")]
 struct PyDatabase(Database);
@@ -40,22 +137,32 @@ impl PyDatabase {
         analysis::analyze(&mut self.0);
     }
 
-    // TODO: remove
-    fn test_search(&mut self) {
-        use query::{search, Expr, ExprMatchFilter, Field};
+    fn search(&mut self, query: &PyDict) -> PyResult<Vec<(Addr64, usize)>> {
+        let filters = query
+            .iter()
+            .map(|(k, v)| -> PyResult<ExprMatchFilter> {
+                let field: &str = k.extract()?;
+                let field: Field = field
+                    .parse()
+                    .map_err(|()| PyValueError::new_err("Bad field name"))?;
 
-        search(
-            &mut self.0,
-            &[ExprMatchFilter {
-                field: Field::Value,
-                expr: Expr::Sum(vec![Expr::Any, Expr::Const(0x10)]),
-            }],
-        );
+                let expr: PyExpr = v.extract()?;
+                let expr = expr.0;
+
+                Ok(ExprMatchFilter { field, expr })
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+
+        Ok(search(&mut self.0, &filters)
+            .into_iter()
+            .map(|StatementAddr { asm_addr, ir_index }| (asm_addr, ir_index))
+            .collect())
     }
 }
 
 #[pymodule]
 fn binq(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<PyDatabase>()?;
+    m.add_class::<PyExpr>()?;
     Ok(())
 }

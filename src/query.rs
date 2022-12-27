@@ -14,22 +14,25 @@ pub use self::{
     fields::{ExprMatchFilter, Field},
 };
 
-pub fn search(database: &mut Database, filters: &[ExprMatchFilter]) {
+pub fn search(database: &mut Database, filters: &[ExprMatchFilter]) -> Vec<StatementAddr> {
     let mut query = database.world.query::<(&Statement, &ValueSources)>();
     let view = query.view();
 
     let mut matcher = ExprMatcher::new(database, &view);
 
-    for (_entity, (addr, stmt, value_sources)) in database
+    database
         .world
         .query::<(&StatementAddr, &Statement, &ValueSources)>()
         .into_iter()
-    {
-        if filters
-            .iter()
-            .all(|filter| match_expr_filter(&mut matcher, *addr, stmt, value_sources, filter))
-        {
-            println!("{}", *addr);
-        }
-    }
+        .filter_map(|(_entity, (addr, stmt, value_sources))| {
+            if filters
+                .iter()
+                .all(|filter| match_expr_filter(&mut matcher, *addr, stmt, value_sources, filter))
+            {
+                Some(*addr)
+            } else {
+                None
+            }
+        })
+        .collect()
 }
