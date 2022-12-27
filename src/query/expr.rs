@@ -235,14 +235,18 @@ impl<'db, 'view, 'query> ExprMatcher<'db, 'view, 'query> {
 
                 let const_pattern = Expr::Const(identity);
                 if self.match_simple_expr(addr, value_sources, &const_pattern, rhs) {
-                    Some(lhs)
+                    return Some(lhs);
                 } else if is_commutative
                     && self.match_simple_expr(addr, value_sources, &const_pattern, lhs)
                 {
-                    Some(rhs)
-                } else {
-                    None
+                    return Some(rhs);
                 }
+
+                if matches!(op, BinaryOpKind::Xor | BinaryOpKind::Sub) && lhs == rhs {
+                    return Some(&SimpleExpr::Const(0));
+                }
+
+                None
             }
 
             IrExpr::Deref(_)
