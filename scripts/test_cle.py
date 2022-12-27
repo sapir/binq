@@ -22,7 +22,7 @@ def lift_object(db, object: cle.Backend):
         db.add_func(object.linked_base, buf, addr)
 
 
-db = binq.Database()
+db = binq.Database("x64")
 filename = sys.argv[1]
 print("loading", filename)
 bin = cle.Loader(filename)

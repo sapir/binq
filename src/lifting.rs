@@ -42,9 +42,9 @@ pub struct X86Lifter<'a> {
 }
 
 impl<'a> X86Lifter<'a> {
-    pub fn new(data: &'a [u8], base_addr: Addr64) -> Self {
+    pub fn new(bitness: u32, data: &'a [u8], base_addr: Addr64) -> Self {
         Self {
-            decoder: Decoder::with_ip(64, data, base_addr, 0),
+            decoder: Decoder::with_ip(bitness, data, base_addr, 0),
             instr_info_factory: InstructionInfoFactory::new(),
             cur_insn: Instruction::default(),
             base_addr,

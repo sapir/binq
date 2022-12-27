@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     fmt::{self, Display},
+    str::FromStr,
 };
 
 use anyhow::Result;
@@ -15,20 +16,50 @@ use crate::{
     lifting::X86Lifter,
 };
 
-#[derive(Default)]
+#[derive(Clone, Copy, Debug)]
+pub enum Arch {
+    X86,
+    X64,
+}
+
+impl FromStr for Arch {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "x86" => Ok(Self::X86),
+            "x64" => Ok(Self::X64),
+            _ => Err(()),
+        }
+    }
+}
+
 pub struct Database {
+    pub arch: Arch,
     pub world: World,
     pub addr_to_entity: HashMap<StatementAddr, Entity>,
 }
 
 impl Database {
+    pub fn new(arch: Arch) -> Self {
+        Self {
+            arch,
+            world: World::new(),
+            addr_to_entity: HashMap::new(),
+        }
+    }
+
     fn contains_addr(&self, addr: Addr64) -> bool {
         self.addr_to_entity
             .contains_key(&StatementAddr::new_first(addr))
     }
 
     pub fn add_func(&mut self, base_addr: Addr64, buf: &[u8], start_addr: Addr64) -> Result<()> {
-        let mut lifter = X86Lifter::new(buf, base_addr);
+        let bitness = match self.arch {
+            Arch::X86 => 32,
+            Arch::X64 => 64,
+        };
+        let mut lifter = X86Lifter::new(bitness, buf, base_addr);
         let buf_end_addr = base_addr + Addr64::try_from(buf.len()).unwrap();
 
         let mut todo = vec![start_addr];

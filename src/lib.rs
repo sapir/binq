@@ -11,7 +11,7 @@ mod lifting;
 mod query;
 mod utils;
 
-use pyo3::prelude::*;
+use pyo3::{exceptions::PyValueError, prelude::*};
 
 use self::{database::Database, ir::Addr64};
 
@@ -21,8 +21,12 @@ struct PyDatabase(Database);
 #[pymethods]
 impl PyDatabase {
     #[new]
-    fn new() -> Self {
-        Self(Database::default())
+    fn new(arch: &str) -> PyResult<Self> {
+        let arch = arch
+            .parse()
+            .map_err(|()| PyValueError::new_err("Bad value for 'arch'"))?;
+
+        Ok(Self(Database::new(arch)))
     }
 
     #[args(start_addr = "None")]
