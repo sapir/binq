@@ -235,7 +235,24 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
             IrExpr::Simple(inner) => Some(inner),
 
             IrExpr::BinaryOp(BinaryOp { op, lhs, rhs }) => {
-                // TODO: x & x and x | x are the same as x
+                if lhs == rhs {
+                    match op {
+                        // x ^ x = 0
+                        // x - x = 0
+                        BinaryOpKind::Xor | BinaryOpKind::Sub => {
+                            return Some(&SimpleExpr::Const(0));
+                        }
+
+                        // x & x = x
+                        // x | x = x
+                        BinaryOpKind::And | BinaryOpKind::Or => {
+                            return Some(lhs);
+                        }
+
+                        _ => {}
+                    }
+                }
+
                 let identity = match op {
                     BinaryOpKind::Add
                     | BinaryOpKind::Sub
@@ -275,10 +292,6 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                     return Some(lhs);
                 } else if is_commutative && self.match_simple_expr(&const_pattern, lhs) {
                     return Some(rhs);
-                }
-
-                if matches!(op, BinaryOpKind::Xor | BinaryOpKind::Sub) && lhs == rhs {
-                    return Some(&SimpleExpr::Const(0));
                 }
 
                 None
