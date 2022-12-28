@@ -307,23 +307,72 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
     }
 
     fn match_compare_op(&mut self, pat_cond: &ConditionExpr, ir_op: &CompareOp) -> bool {
-        // TODO: handle off-by-one comparisons (e.g. <= 0xf instead of < 0x10)
+        fn inner(matcher: &mut ExprMatcherAt, pat_cond: &ConditionExpr, ir_op: &CompareOp) -> bool {
+            let unswapped_match = matcher.match_simple_expr(&pat_cond.lhs, &ir_op.lhs)
+                && matcher.match_simple_expr(&pat_cond.rhs, &ir_op.rhs);
+            if pat_cond.kind == ir_op.kind && unswapped_match {
+                return true;
+            }
 
-        let unswapped_match = self.match_simple_expr(&pat_cond.lhs, &ir_op.lhs)
-            && self.match_simple_expr(&pat_cond.rhs, &ir_op.rhs);
-        if pat_cond.kind == ir_op.kind && unswapped_match {
+            let swapped_match = matcher.match_simple_expr(&pat_cond.lhs, &ir_op.lhs)
+                && matcher.match_simple_expr(&pat_cond.rhs, &ir_op.rhs);
+            if pat_cond.kind == ir_op.kind && pat_cond.kind.is_symmetric() && swapped_match {
+                return true;
+            }
+
+            // TODO: Notify caller if we're actually returning the inverse / swapped
+            if pat_cond.kind == ir_op.kind.swapped_inverse() && (unswapped_match || swapped_match) {
+                return true;
+            }
+
+            false
+        }
+
+        if inner(self, pat_cond, ir_op) {
             return true;
         }
 
-        let swapped_match = self.match_simple_expr(&pat_cond.lhs, &ir_op.lhs)
-            && self.match_simple_expr(&pat_cond.rhs, &ir_op.rhs);
-        if pat_cond.kind == ir_op.kind && pat_cond.kind.is_symmetric() && swapped_match {
-            return true;
-        }
+        // Handle "off-by-one" comparisons (e.g. <= 0xf instead of < 0x10)
+        let offset_cmp_kind_and_value = match pat_cond.kind {
+            CompareOpKind::Equal | CompareOpKind::NotEqual => None,
+            CompareOpKind::LessThanUnsigned => Some((CompareOpKind::LessThanOrEqualUnsigned, -1)),
+            CompareOpKind::LessThanOrEqualUnsigned => Some((CompareOpKind::LessThanUnsigned, 1)),
+            CompareOpKind::LessThanSigned => Some((CompareOpKind::LessThanOrEqualSigned, -1)),
+            CompareOpKind::LessThanOrEqualSigned => Some((CompareOpKind::LessThanSigned, 1)),
+        };
 
-        // TODO: Notify caller if we're actually returning the inverse / swapped
-        if pat_cond.kind == ir_op.kind.swapped_inverse() && (unswapped_match || swapped_match) {
-            return true;
+        if let Some((kind, offset)) = offset_cmp_kind_and_value {
+            if let Expr::Const(rhs) = pat_cond.rhs {
+                // TODO: don't clone :(
+                if inner(
+                    self,
+                    &ConditionExpr {
+                        kind,
+                        lhs: pat_cond.lhs.clone(),
+                        rhs: Expr::Const(rhs.wrapping_add_signed(offset)),
+                    },
+                    ir_op,
+                ) {
+                    return true;
+                }
+            }
+
+            // This works for the left-hand side, too: `0xf < x` is the same as
+            // `0x10 <= x`
+            if let Expr::Const(lhs) = pat_cond.lhs {
+                // TODO: don't clone :(
+                if inner(
+                    self,
+                    &ConditionExpr {
+                        kind,
+                        lhs: Expr::Const(lhs.wrapping_add_signed(-offset)),
+                        rhs: pat_cond.rhs.clone(),
+                    },
+                    ir_op,
+                ) {
+                    return true;
+                }
+            }
         }
 
         false
