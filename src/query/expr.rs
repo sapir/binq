@@ -14,6 +14,7 @@ use crate::{
 #[derive(Clone, Debug)]
 pub enum Expr {
     Any,
+    AnyConst,
     Const(u64),
     Deref(Box<Expr>),
     Sum(Vec<Expr>),
@@ -81,7 +82,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
         match pattern_expr {
             Expr::Any => true,
 
-            Expr::Const(_) => {
+            Expr::AnyConst | Expr::Const(_) => {
                 if let Some(inner) = self.get_inner_simple_expr(ir_expr) {
                     self.match_simple_expr(pattern_expr, inner)
                 } else {
@@ -177,6 +178,8 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
             (Expr::Any, _) => true,
 
             (_, SimpleExpr::Variable(ir_var)) => self.match_var(pattern_expr, *ir_var),
+
+            (Expr::AnyConst, SimpleExpr::Const(_)) => true,
 
             (Expr::Const(pat_x), SimpleExpr::Const(ir_x)) => *pat_x == *ir_x,
 
@@ -307,7 +310,11 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
     }
 
     fn match_compare_op(&mut self, pat_cond: &ConditionExpr, ir_op: &CompareOp) -> bool {
-        fn inner(matcher: &mut ExprMatcherAt, pat_cond: &ConditionExpr, ir_op: &CompareOp) -> bool {
+        fn match_direct(
+            matcher: &mut ExprMatcherAt,
+            pat_cond: &ConditionExpr,
+            ir_op: &CompareOp,
+        ) -> bool {
             let unswapped_match = matcher.match_simple_expr(&pat_cond.lhs, &ir_op.lhs)
                 && matcher.match_simple_expr(&pat_cond.rhs, &ir_op.rhs);
             if pat_cond.kind == ir_op.kind && unswapped_match {
@@ -328,47 +335,104 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
             false
         }
 
-        if inner(self, pat_cond, ir_op) {
-            return true;
-        }
+        fn match_direct_or_off_by_one(
+            matcher: &mut ExprMatcherAt,
+            pat_cond: &ConditionExpr,
+            ir_op: &CompareOp,
+        ) -> bool {
+            if match_direct(matcher, pat_cond, ir_op) {
+                return true;
+            }
 
-        // Handle "off-by-one" comparisons (e.g. <= 0xf instead of < 0x10)
-        let offset_cmp_kind_and_value = match pat_cond.kind {
-            CompareOpKind::Equal | CompareOpKind::NotEqual => None,
-            CompareOpKind::LessThanUnsigned => Some((CompareOpKind::LessThanOrEqualUnsigned, -1)),
-            CompareOpKind::LessThanOrEqualUnsigned => Some((CompareOpKind::LessThanUnsigned, 1)),
-            CompareOpKind::LessThanSigned => Some((CompareOpKind::LessThanOrEqualSigned, -1)),
-            CompareOpKind::LessThanOrEqualSigned => Some((CompareOpKind::LessThanSigned, 1)),
-        };
+            // Handle "off-by-one" comparisons (e.g. <= 0xf instead of < 0x10)
+            let offset_cmp_kind_and_value = match pat_cond.kind {
+                CompareOpKind::Equal | CompareOpKind::NotEqual => None,
+                CompareOpKind::LessThanUnsigned => {
+                    Some((CompareOpKind::LessThanOrEqualUnsigned, -1))
+                }
+                CompareOpKind::LessThanOrEqualUnsigned => {
+                    Some((CompareOpKind::LessThanUnsigned, 1))
+                }
+                CompareOpKind::LessThanSigned => Some((CompareOpKind::LessThanOrEqualSigned, -1)),
+                CompareOpKind::LessThanOrEqualSigned => Some((CompareOpKind::LessThanSigned, 1)),
+            };
 
-        if let Some((kind, offset)) = offset_cmp_kind_and_value {
-            if let Expr::Const(rhs) = pat_cond.rhs {
-                // TODO: don't clone :(
-                if inner(
-                    self,
-                    &ConditionExpr {
-                        kind,
-                        lhs: pat_cond.lhs.clone(),
-                        rhs: Expr::Const(rhs.wrapping_add_signed(offset)),
-                    },
-                    ir_op,
-                ) {
-                    return true;
+            if let Some((kind, offset)) = offset_cmp_kind_and_value {
+                if let Expr::Const(rhs) = pat_cond.rhs {
+                    // TODO: don't clone :(
+                    if match_direct(
+                        matcher,
+                        &ConditionExpr {
+                            kind,
+                            lhs: pat_cond.lhs.clone(),
+                            rhs: Expr::Const(rhs.wrapping_add_signed(offset)),
+                        },
+                        ir_op,
+                    ) {
+                        return true;
+                    }
+                }
+
+                // This works for the left-hand side, too: `0xf < x` is the same as
+                // `0x10 <= x`
+                if let Expr::Const(lhs) = pat_cond.lhs {
+                    // TODO: don't clone :(
+                    if match_direct(
+                        matcher,
+                        &ConditionExpr {
+                            kind,
+                            lhs: Expr::Const(lhs.wrapping_add_signed(-offset)),
+                            rhs: pat_cond.rhs.clone(),
+                        },
+                        ir_op,
+                    ) {
+                        return true;
+                    }
                 }
             }
 
-            // This works for the left-hand side, too: `0xf < x` is the same as
-            // `0x10 <= x`
-            if let Expr::Const(lhs) = pat_cond.lhs {
-                // TODO: don't clone :(
-                if inner(
-                    self,
-                    &ConditionExpr {
-                        kind,
-                        lhs: Expr::Const(lhs.wrapping_add_signed(-offset)),
-                        rhs: pat_cond.rhs.clone(),
+            false
+        }
+
+        if match_direct_or_off_by_one(self, pat_cond, ir_op) {
+            return true;
+        }
+
+        // `0 les x && x lts y` with a constant y could be compiled to `x ltu
+        // y`, so if we see `x ltu y` with a constant y, match `0 les x` and `x
+        // lts y`, too. Same goes for `x leu y` etc.
+        if let CompareOp {
+            kind: CompareOpKind::LessThanUnsigned | CompareOpKind::LessThanOrEqualUnsigned,
+            lhs: ir_x,
+            rhs: ir_y,
+        } = ir_op
+        {
+            if self.match_simple_expr(&Expr::AnyConst, ir_y) {
+                // Match `0 les x`
+                if self.match_compare_op(
+                    pat_cond,
+                    &CompareOp {
+                        kind: CompareOpKind::LessThanOrEqualSigned,
+                        lhs: SimpleExpr::Const(0),
+                        rhs: *ir_x,
                     },
-                    ir_op,
+                ) {
+                    return true;
+                }
+
+                // Match `x lts/les y`
+                let signed_op_for_y = match ir_op.kind {
+                    CompareOpKind::LessThanUnsigned => CompareOpKind::LessThanSigned,
+                    CompareOpKind::LessThanOrEqualUnsigned => CompareOpKind::LessThanOrEqualSigned,
+                    _ => unreachable!(),
+                };
+                if self.match_compare_op(
+                    pat_cond,
+                    &CompareOp {
+                        kind: signed_op_for_y,
+                        lhs: *ir_x,
+                        rhs: *ir_y,
+                    },
                 ) {
                     return true;
                 }
