@@ -2,14 +2,14 @@ use hecs::{Entity, World};
 
 use crate::{
     database::{Database, StatementAddr},
-    ir::{BinaryOp, CompareOp, Expr, SimpleExpr, Statement, UnaryOp, Variable},
-    lifting::{REG_CF, REG_DF, REG_IF, REG_OF, REG_SF, REG_ZF},
+    ir::{BinaryOp, CompareOp, Expr, SimpleExpr, Statement, UnaryOp, Variable, X86FlagResult},
+    lifting::{REG_CF, REG_OF, REG_SF, REG_ZF},
     utils::small_multi_map::SmallMultiMap,
 };
 
 use super::code_flow::{CodeFlowKind, InCodeFlowEdges, OutCodeFlowEdges};
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct ValueSources(pub SmallMultiMap<Variable, StatementAddr>);
 
 fn data_flow_follows_edge_kind(kind: CodeFlowKind) -> bool {
@@ -180,19 +180,17 @@ fn expr_uses_var(expr: &Expr, var: Variable) -> bool {
             rhs,
         } => simple_expr_is_var(lhs, var) || simple_expr_is_var(rhs, var),
 
-        Expr::X86Flag {
-            flag_reg: _,
-            from_expr,
-        } => *from_expr == var,
+        Expr::X86Flag(X86FlagResult {
+            which_flag: _,
+            mnemonic: _,
+            lhs,
+            rhs,
+            math_result,
+        }) => simple_expr_is_var(lhs, var) || simple_expr_is_var(rhs, var) || *math_result == var,
 
         Expr::ComplexX86ConditionCode(_) => match var {
             Variable::Register(reg) => {
-                reg == REG_OF
-                    || reg == REG_SF
-                    || reg == REG_ZF
-                    || reg == REG_CF
-                    || reg == REG_DF
-                    || reg == REG_IF
+                reg == REG_OF || reg == REG_SF || reg == REG_ZF || reg == REG_CF
             }
 
             Variable::Temp(_) => false,

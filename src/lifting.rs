@@ -8,7 +8,8 @@ use crate::{
     database::{NextStatementAddr, StatementAddr},
     ir::{
         Addr64, BinaryOp, BinaryOpKind, CompareOp, CompareOpKind, ComplexX86ConditionCode, Const,
-        Expr, Register, SimpleExpr, Statement, Temp, UnaryOp, UnaryOpKind, Variable,
+        Expr, Register, SimpleExpr, Statement, Temp, UnaryOp, UnaryOpKind, Variable, X86Flag,
+        X86FlagResult,
     },
 };
 
@@ -22,8 +23,8 @@ pub const REG_ZF: Register = Register(0xffc2);
 // pub const REG_AF: Register = Register(0xffc3);
 pub const REG_CF: Register = Register(0xffc4);
 // pub const REG_PF: Register = Register(0xffc5);
-pub const REG_DF: Register = Register(0xffc6);
-pub const REG_IF: Register = Register(0xffc7);
+// pub const REG_DF: Register = Register(0xffc6);
+// pub const REG_IF: Register = Register(0xffc7);
 // pub const REG_AC: Register = Register(0xffc8);
 // pub const REG_UIF: Register = Register(0xffc9);
 // pub const REG_C0: Register = Register(0xffca);
@@ -215,6 +216,12 @@ impl<'a> X86Lifter<'a> {
                     }
                 };
 
+                let mnemonic_for_flag = match mnemonic {
+                    Cmp => Sub,
+                    Test => And,
+                    _ => mnemonic,
+                };
+
                 for f in iter_rflags_bits(
                     self.cur_insn.rflags_modified() & !self.cur_insn.rflags_undefined(),
                 ) {
@@ -223,10 +230,13 @@ impl<'a> X86Lifter<'a> {
                         out,
                         f,
                         flag_reg,
-                        Expr::X86Flag {
-                            flag_reg,
-                            from_expr: value,
-                        },
+                        Expr::X86Flag(X86FlagResult {
+                            which_flag: f.ir_flag(),
+                            mnemonic: mnemonic_for_flag,
+                            lhs,
+                            rhs,
+                            math_result: value,
+                        }),
                     );
                 }
 
@@ -815,10 +825,10 @@ enum Rflag {
     CF = RflagsBits::CF,
     // /// `RFLAGS.PF`
     // PF = RflagsBits::PF,
-    /// `RFLAGS.DF`
-    DF = RflagsBits::DF,
-    /// `RFLAGS.IF`
-    IF = RflagsBits::IF,
+    // /// `RFLAGS.DF`
+    // DF = RflagsBits::DF,
+    // /// `RFLAGS.IF`
+    // IF = RflagsBits::IF,
     // /// `RFLAGS.AC`
     // AC = RflagsBits::AC,
     // /// `UIF`
@@ -840,10 +850,30 @@ impl Rflag {
             Rflag::SF => REG_SF,
             Rflag::ZF => REG_ZF,
             Rflag::CF => REG_CF,
-            Rflag::DF => REG_DF,
-            Rflag::IF => REG_IF,
         }
     }
+
+    fn ir_flag(self) -> X86Flag {
+        match self {
+            Rflag::OF => X86Flag::OF,
+            Rflag::SF => X86Flag::SF,
+            Rflag::ZF => X86Flag::ZF,
+            Rflag::CF => X86Flag::CF,
+        }
+    }
+
+    fn from_ir_flag(flag: X86Flag) -> Self {
+        match flag {
+            X86Flag::OF => Rflag::OF,
+            X86Flag::SF => Rflag::SF,
+            X86Flag::ZF => Rflag::ZF,
+            X86Flag::CF => Rflag::CF,
+        }
+    }
+}
+
+pub fn ir_flag_to_register(flag: X86Flag) -> Register {
+    Rflag::from_ir_flag(flag).register()
 }
 
 /// Iterate over [`RflagsBits`] values. Only flags that we actually use are
@@ -851,7 +881,7 @@ impl Rflag {
 fn iter_rflags_bits(value: u32) -> impl Iterator<Item = Rflag> {
     use Rflag::*;
 
-    [OF, SF, ZF, CF, DF, IF]
+    [OF, SF, ZF, CF]
         .into_iter()
         .filter(move |f| (value & (*f as u32)) != 0)
 }

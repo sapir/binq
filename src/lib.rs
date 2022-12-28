@@ -3,6 +3,7 @@
 #![allow(clippy::needless_late_init)]
 #![allow(clippy::collapsible_match)]
 #![allow(clippy::single_match)]
+#![allow(clippy::collapsible_else_if)]
 
 mod analysis;
 mod database;
@@ -21,12 +22,23 @@ use query::{search, Expr, ExprMatchFilter, Field};
 
 use self::{
     database::Database,
-    ir::{Addr64, Statement},
+    ir::{Addr64, CompareOpKind, Statement},
+    query::ConditionExpr,
 };
 
 #[pyclass(name = "Expr")]
 #[derive(Clone)]
 struct PyExpr(Expr);
+
+impl PyExpr {
+    fn make_cmp(&self, kind: CompareOpKind, other: &Self) -> Self {
+        Self(Expr::Condition(Box::new(ConditionExpr {
+            kind,
+            lhs: self.0.clone(),
+            rhs: other.0.clone(),
+        })))
+    }
+}
 
 #[pymethods]
 impl PyExpr {
@@ -44,6 +56,30 @@ impl PyExpr {
 
     fn deref(&self) -> Self {
         Self(Expr::Deref(Box::new(self.0.clone())))
+    }
+
+    fn eq(&self, other: &Self) -> Self {
+        PyExpr::make_cmp(self, CompareOpKind::Equal, other)
+    }
+
+    fn ne(&self, other: &Self) -> Self {
+        PyExpr::make_cmp(self, CompareOpKind::NotEqual, other)
+    }
+
+    fn ltu(&self, other: &Self) -> Self {
+        PyExpr::make_cmp(self, CompareOpKind::LessThanUnsigned, other)
+    }
+
+    fn leu(&self, other: &Self) -> Self {
+        PyExpr::make_cmp(self, CompareOpKind::LessThanOrEqualUnsigned, other)
+    }
+
+    fn lts(&self, other: &Self) -> Self {
+        PyExpr::make_cmp(self, CompareOpKind::LessThanSigned, other)
+    }
+
+    fn les(&self, other: &Self) -> Self {
+        PyExpr::make_cmp(self, CompareOpKind::LessThanOrEqualSigned, other)
     }
 
     fn __add__(&self, other: &Self) -> Self {

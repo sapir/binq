@@ -3,6 +3,8 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+use iced_x86::Mnemonic;
+
 pub type Addr64 = u64;
 
 pub type Const = u64;
@@ -179,12 +181,36 @@ pub enum CompareOpKind {
     NotEqual,
     LessThanUnsigned,
     LessThanOrEqualUnsigned,
-    GreaterThanUnsigned,
-    GreaterThanOrEqualUnsigned,
     LessThanSigned,
     LessThanOrEqualSigned,
-    GreaterThanSigned,
-    GreaterThanOrEqualSigned,
+}
+
+impl CompareOpKind {
+    pub fn is_symmetric(self) -> bool {
+        match self {
+            CompareOpKind::Equal | CompareOpKind::NotEqual => true,
+
+            CompareOpKind::LessThanUnsigned
+            | CompareOpKind::LessThanOrEqualUnsigned
+            | CompareOpKind::LessThanSigned
+            | CompareOpKind::LessThanOrEqualSigned => false,
+        }
+    }
+
+    /// Get comparison kind that is opposite to this one, if you swap the left-
+    /// and right-hand sides of the comparison. e.g. `x < 5` iff `!(5 <= x)`.
+    pub fn swapped_inverse(self) -> Self {
+        use CompareOpKind::*;
+
+        match self {
+            Equal => NotEqual,
+            NotEqual => Equal,
+            LessThanUnsigned => LessThanOrEqualUnsigned,
+            LessThanOrEqualUnsigned => LessThanUnsigned,
+            LessThanSigned => LessThanOrEqualSigned,
+            LessThanOrEqualSigned => LessThanSigned,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -201,15 +227,51 @@ impl Display for CompareOp {
             CompareOpKind::NotEqual => "!=",
             CompareOpKind::LessThanUnsigned => "ltu",
             CompareOpKind::LessThanOrEqualUnsigned => "leu",
-            CompareOpKind::GreaterThanUnsigned => "gtu",
-            CompareOpKind::GreaterThanOrEqualUnsigned => "geu",
             CompareOpKind::LessThanSigned => "lts",
             CompareOpKind::LessThanOrEqualSigned => "les",
-            CompareOpKind::GreaterThanSigned => "gts",
-            CompareOpKind::GreaterThanOrEqualSigned => "ges",
         };
 
         write!(f, "({} {} {})", self.lhs, op_str, self.rhs)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum X86Flag {
+    /// Overflow Flag
+    OF,
+    /// Sign Flag
+    SF,
+    /// Zero Flag
+    ZF,
+    /// Carry Flag
+    CF,
+}
+
+impl Display for X86Flag {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct X86FlagResult {
+    pub which_flag: X86Flag,
+    /// The mnemonic that generated this flag. If the original mnemonic was
+    /// `Cmp` or `Test`, then `Sub` or `And` will be used instead.
+    pub mnemonic: Mnemonic,
+    pub lhs: SimpleExpr,
+    pub rhs: SimpleExpr,
+    pub math_result: Variable,
+}
+
+impl Display for X86FlagResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: use an iced formatter for the mnemonic?
+        write!(
+            f,
+            "x86_flag({}, {:?}, {}, {}, {})",
+            self.which_flag, self.mnemonic, self.lhs, self.rhs, self.math_result
+        )
     }
 }
 
@@ -251,10 +313,7 @@ pub enum Expr {
         num_bits: u8,
         rhs: SimpleExpr,
     },
-    X86Flag {
-        flag_reg: Register,
-        from_expr: Variable,
-    },
+    X86Flag(X86FlagResult),
     ComplexX86ConditionCode(ComplexX86ConditionCode),
 }
 
@@ -282,10 +341,7 @@ impl Display for Expr {
                 num_bits,
                 rhs,
             } => write!(f, "insert_bits({}, {}, {}, {})", lhs, shift, num_bits, rhs),
-            Expr::X86Flag {
-                flag_reg,
-                from_expr,
-            } => write!(f, "x86_flag({}, {})", flag_reg, from_expr),
+            Expr::X86Flag(flag_result) => flag_result.fmt(f),
             Expr::ComplexX86ConditionCode(cc) => cc.fmt(f),
         }
     }

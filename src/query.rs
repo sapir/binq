@@ -10,7 +10,7 @@ use crate::{
 use self::{expr::ExprMatcher, fields::match_expr_filter};
 
 pub use self::{
-    expr::Expr,
+    expr::{ConditionExpr, Expr},
     fields::{ExprMatchFilter, Field},
 };
 

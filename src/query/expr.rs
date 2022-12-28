@@ -1,9 +1,14 @@
 use hecs::View;
+use iced_x86::Mnemonic;
 
 use crate::{
     analysis::data_flow::ValueSources,
     database::{Database, StatementAddr},
-    ir::{BinaryOp, BinaryOpKind, Expr as IrExpr, SimpleExpr, Statement, Variable},
+    ir::{
+        BinaryOp, BinaryOpKind, CompareOp, CompareOpKind, ComplexX86ConditionCode, Expr as IrExpr,
+        SimpleExpr, Statement, UnaryOp, UnaryOpKind, Variable, X86Flag, X86FlagResult,
+    },
+    lifting::ir_flag_to_register,
 };
 
 #[derive(Clone, Debug)]
@@ -13,8 +18,29 @@ pub enum Expr {
     Deref(Box<Expr>),
     Sum(Vec<Expr>),
     Product(Vec<Expr>),
+    Condition(Box<ConditionExpr>),
 }
 
+#[derive(Clone, Debug)]
+pub struct ConditionExpr {
+    pub kind: CompareOpKind,
+    pub lhs: Expr,
+    pub rhs: Expr,
+}
+
+impl ConditionExpr {
+    pub fn inverse(&self) -> Self {
+        // TODO: don't clone
+        Self {
+            kind: self.kind.swapped_inverse(),
+            lhs: self.rhs.clone(),
+            rhs: self.lhs.clone(),
+        }
+    }
+}
+
+// TODO: multiple sources are OK as long as they all expand to the same thing
+// (either a constant or a specific variable+location)
 fn get_single_value_source(sources: &ValueSources, var: Variable) -> Option<StatementAddr> {
     let mut var_sources = sources.0.get(&var);
     var_sources
@@ -50,7 +76,7 @@ impl Drop for ExprMatcherAt<'_, '_, '_, '_> {
     }
 }
 
-impl ExprMatcherAt<'_, '_, '_, '_> {
+impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
     fn match_expr(&mut self, pattern_expr: &Expr, ir_expr: &IrExpr) -> bool {
         match pattern_expr {
             Expr::Any => true,
@@ -113,6 +139,36 @@ impl ExprMatcherAt<'_, '_, '_, '_> {
                     }
                 }
             }
+
+            Expr::Condition(pat_cond) => self.match_condition_pattern(pat_cond, ir_expr),
+        }
+    }
+
+    fn match_condition_pattern(&mut self, pat_cond: &ConditionExpr, ir_expr: &IrExpr) -> bool {
+        match ir_expr {
+            IrExpr::Unknown
+            | IrExpr::Deref(_)
+            | IrExpr::BinaryOp(_)
+            | IrExpr::InsertBits { .. } => false,
+
+            IrExpr::Simple(simple) => {
+                // TODO: don't clone :(
+                let pattern_expr = Expr::Condition(Box::new(pat_cond.clone()));
+                self.match_simple_expr(&pattern_expr, simple)
+            }
+
+            IrExpr::CompareOp(ir_op) => self.match_compare_op(pat_cond, ir_op),
+
+            IrExpr::X86Flag(flag_result) => self.match_x86_flag_condition(pat_cond, flag_result),
+
+            IrExpr::ComplexX86ConditionCode(cc) => {
+                self.match_complex_x86_flag_condition(pat_cond, *cc)
+            }
+
+            IrExpr::UnaryOp(UnaryOp {
+                op: UnaryOpKind::Not,
+                value,
+            }) => self.match_condition_pattern(&pat_cond.inverse(), &IrExpr::Simple(*value)),
         }
     }
 
@@ -124,9 +180,9 @@ impl ExprMatcherAt<'_, '_, '_, '_> {
 
             (Expr::Const(pat_x), SimpleExpr::Const(ir_x)) => *pat_x == *ir_x,
 
-            (Expr::Deref(_), _) => false,
+            (Expr::Deref(_) | Expr::Condition(_), SimpleExpr::Const(_)) => false,
 
-            (Expr::Sum(terms), ir_expr) => {
+            (Expr::Sum(terms), ir_expr @ SimpleExpr::Const(_)) => {
                 if let [term] = &terms[..] {
                     self.match_simple_expr(term, ir_expr)
                 } else {
@@ -134,7 +190,7 @@ impl ExprMatcherAt<'_, '_, '_, '_> {
                 }
             }
 
-            (Expr::Product(factors), ir_expr) => {
+            (Expr::Product(factors), ir_expr @ SimpleExpr::Const(_)) => {
                 if let [factor] = &factors[..] {
                     self.match_simple_expr(factor, ir_expr)
                 } else {
@@ -144,13 +200,15 @@ impl ExprMatcherAt<'_, '_, '_, '_> {
         }
     }
 
-    fn match_var(&mut self, pattern_expr: &Expr, ir_var: Variable) -> bool {
-        let Some(source_addr) = get_single_value_source(self.value_sources, ir_var)
-        else { return false };
+    fn try_expand_var(
+        &mut self,
+        ir_var: Variable,
+    ) -> Option<(StatementAddr, &'view IrExpr, &'view ValueSources)> {
+        let source_addr = get_single_value_source(self.value_sources, ir_var)?;
 
         if self.matcher.visited_addr_stack.contains(&source_addr) {
             // Loop!
-            return false;
+            return None;
         }
 
         let entity = self.matcher.database.addr_to_entity[&source_addr];
@@ -159,8 +217,15 @@ impl ExprMatcherAt<'_, '_, '_, '_> {
         else { panic!("source isn't an Assign statement") };
         debug_assert_eq!(*lhs, ir_var);
 
+        Some((source_addr, rhs, source_value_sources))
+    }
+
+    fn match_var(&mut self, pattern_expr: &Expr, ir_var: Variable) -> bool {
+        let Some((source_addr, source_expr, source_value_sources)) = self.try_expand_var(ir_var)
+        else { return false };
+
         ExprMatcherAt::new(source_addr, source_value_sources, self.matcher)
-            .match_expr(pattern_expr, rhs)
+            .match_expr(pattern_expr, source_expr)
     }
 
     fn get_inner_simple_expr<'b>(&mut self, expr: &'b IrExpr) -> Option<&'b SimpleExpr> {
@@ -170,6 +235,7 @@ impl ExprMatcherAt<'_, '_, '_, '_> {
             IrExpr::Simple(inner) => Some(inner),
 
             IrExpr::BinaryOp(BinaryOp { op, lhs, rhs }) => {
+                // TODO: x & x and x | x are the same as x
                 let identity = match op {
                     BinaryOpKind::Add
                     | BinaryOpKind::Sub
@@ -225,6 +291,320 @@ impl ExprMatcherAt<'_, '_, '_, '_> {
             | IrExpr::X86Flag { .. }
             | IrExpr::ComplexX86ConditionCode(_) => None,
         }
+    }
+
+    fn match_compare_op(&mut self, pat_cond: &ConditionExpr, ir_op: &CompareOp) -> bool {
+        // TODO: handle off-by-one comparisons (e.g. <= 0xf instead of < 0x10)
+
+        let unswapped_match = self.match_simple_expr(&pat_cond.lhs, &ir_op.lhs)
+            && self.match_simple_expr(&pat_cond.rhs, &ir_op.rhs);
+        if pat_cond.kind == ir_op.kind && unswapped_match {
+            return true;
+        }
+
+        let swapped_match = self.match_simple_expr(&pat_cond.lhs, &ir_op.lhs)
+            && self.match_simple_expr(&pat_cond.rhs, &ir_op.rhs);
+        if pat_cond.kind == ir_op.kind && pat_cond.kind.is_symmetric() && swapped_match {
+            return true;
+        }
+
+        // TODO: Notify caller if we're actually returning the inverse / swapped
+        if pat_cond.kind == ir_op.kind.swapped_inverse() && (unswapped_match || swapped_match) {
+            return true;
+        }
+
+        false
+    }
+
+    fn match_x86_flag_condition(
+        &mut self,
+        pat_cond: &ConditionExpr,
+        x86_flag_info: &X86FlagResult,
+    ) -> bool {
+        let X86FlagResult {
+            which_flag,
+            mnemonic,
+            lhs,
+            rhs,
+            math_result,
+        } = *x86_flag_info;
+
+        match which_flag {
+            // S = (math result < 0)
+            X86Flag::SF => {
+                if mnemonic == Mnemonic::Sub {
+                    if self.match_compare_op(
+                        pat_cond,
+                        &CompareOp {
+                            kind: CompareOpKind::LessThanSigned,
+                            lhs,
+                            rhs,
+                        },
+                    ) {
+                        return true;
+                    }
+                } else {
+                    if self.match_compare_op(
+                        pat_cond,
+                        &CompareOp {
+                            kind: CompareOpKind::LessThanSigned,
+                            lhs: math_result.into(),
+                            rhs: SimpleExpr::Const(0),
+                        },
+                    ) {
+                        return true;
+                    }
+                }
+            }
+
+            // Z = (math result = 0)
+            X86Flag::ZF => {
+                if matches!(mnemonic, Mnemonic::Sub | Mnemonic::And)
+                    && lhs == rhs
+                    && self.match_compare_op(
+                        pat_cond,
+                        &CompareOp {
+                            kind: CompareOpKind::Equal,
+                            lhs,
+                            rhs: SimpleExpr::Const(0),
+                        },
+                    )
+                {
+                    return true;
+                }
+
+                if self.match_compare_op(
+                    pat_cond,
+                    &CompareOp {
+                        kind: CompareOpKind::Equal,
+                        lhs: math_result.into(),
+                        rhs: SimpleExpr::Const(0),
+                    },
+                ) {
+                    return true;
+                }
+            }
+
+            X86Flag::CF => match mnemonic {
+                // C of sub = LessThanUnsigned
+                Mnemonic::Sub => {
+                    if self.match_compare_op(
+                        pat_cond,
+                        &CompareOp {
+                            kind: CompareOpKind::LessThanUnsigned,
+                            lhs,
+                            rhs,
+                        },
+                    ) {
+                        return true;
+                    }
+                }
+
+                // There's a carry in addition iff `result ltu lhs`, and also
+                // iff `result ltu rhs` (if I'm not mistaken).
+                Mnemonic::Add => {
+                    if self.match_compare_op(
+                        pat_cond,
+                        &CompareOp {
+                            kind: CompareOpKind::LessThanUnsigned,
+                            lhs: math_result.into(),
+                            rhs: lhs,
+                        },
+                    ) || self.match_compare_op(
+                        pat_cond,
+                        &CompareOp {
+                            kind: CompareOpKind::LessThanUnsigned,
+                            lhs: math_result.into(),
+                            rhs,
+                        },
+                    ) {
+                        return true;
+                    }
+                }
+
+                // TODO:
+                // C of bt = bit is set
+                _ => todo!(
+                    "CF as condition for mnemonic = {:?} @ {}",
+                    mnemonic,
+                    self.addr
+                ),
+            },
+
+            // TODO: implement OF
+            X86Flag::OF => todo!("OF as condition @ {}", self.addr),
+        }
+
+        false
+    }
+
+    fn match_complex_x86_flag_condition(
+        &mut self,
+        pat_cond: &ConditionExpr,
+        cc: ComplexX86ConditionCode,
+    ) -> bool {
+        let Some((source_addr, source_flag_result, source_value_sources)) = self
+            .get_complex_x86_flag_result(match cc {
+                ComplexX86ConditionCode::Be => &[X86Flag::CF, X86Flag::ZF],
+                ComplexX86ConditionCode::L => &[X86Flag::SF, X86Flag::OF],
+                ComplexX86ConditionCode::Le => &[X86Flag::SF, X86Flag::OF, X86Flag::ZF],
+            })
+        else {
+            eprintln!("Failed to get flags for {:?} @ {}", cc, self.addr);
+            return false
+        };
+
+        let X86FlagResult {
+            which_flag: _,
+            mnemonic,
+            lhs,
+            rhs,
+            math_result,
+        } = *source_flag_result;
+
+        let mut source_matcher =
+            ExprMatcherAt::new(source_addr, source_value_sources, self.matcher);
+
+        match (cc, mnemonic) {
+            // BE = C or Z i.e. LessThanOrEqualUnsigned when C =
+            // LessThanUnsigned
+            (ComplexX86ConditionCode::Be, Mnemonic::Sub) => {
+                if source_matcher.match_compare_op(
+                    pat_cond,
+                    &CompareOp {
+                        kind: CompareOpKind::LessThanOrEqualUnsigned,
+                        lhs,
+                        rhs,
+                    },
+                ) {
+                    return true;
+                }
+            }
+
+            // afaict, And sets CF to 0, and Be = CF|ZF, so this is the same
+            // thing as the E/Z condition code.
+            (ComplexX86ConditionCode::Be, Mnemonic::And) => {
+                return source_matcher.match_x86_flag_condition(
+                    pat_cond,
+                    &X86FlagResult {
+                        which_flag: X86Flag::ZF,
+                        mnemonic,
+                        lhs,
+                        rhs,
+                        math_result,
+                    },
+                );
+            }
+
+            (ComplexX86ConditionCode::L, Mnemonic::Sub) => {
+                if source_matcher.match_compare_op(
+                    pat_cond,
+                    &CompareOp {
+                        kind: CompareOpKind::LessThanSigned,
+                        lhs,
+                        rhs,
+                    },
+                ) {
+                    return true;
+                }
+            }
+
+            // And, Test and Or set OF to 0, so L = (SF ^ OF) = SF.
+            (ComplexX86ConditionCode::L, Mnemonic::And | Mnemonic::Or) => {
+                return source_matcher.match_x86_flag_condition(
+                    pat_cond,
+                    &X86FlagResult {
+                        which_flag: X86Flag::SF,
+                        mnemonic,
+                        lhs,
+                        rhs,
+                        math_result,
+                    },
+                );
+            }
+
+            (ComplexX86ConditionCode::Le, Mnemonic::Sub) => {
+                if source_matcher.match_compare_op(
+                    pat_cond,
+                    &CompareOp {
+                        kind: CompareOpKind::LessThanOrEqualSigned,
+                        lhs,
+                        rhs,
+                    },
+                ) {
+                    return true;
+                }
+            }
+
+            // LE is like L but OrEqual.
+            (ComplexX86ConditionCode::Le, Mnemonic::And) if lhs == rhs => {
+                if source_matcher.match_compare_op(
+                    pat_cond,
+                    &CompareOp {
+                        kind: CompareOpKind::LessThanOrEqualSigned,
+                        lhs,
+                        rhs: SimpleExpr::Const(0),
+                    },
+                ) {
+                    return true;
+                }
+            }
+
+            (_, _) => {
+                eprintln!(
+                    "unimplemented x86 cc {:?} for mnemonic = {:?} @ {}",
+                    cc, mnemonic, source_matcher.addr
+                );
+            }
+        }
+
+        false
+    }
+
+    /// Calls `try_expand_var` for the given flags, and return one of the
+    /// `X86FlagResult`s. Verifies that they're all equivalent.
+    fn get_complex_x86_flag_result(
+        &mut self,
+        flags: &[X86Flag],
+    ) -> Option<(StatementAddr, &'view X86FlagResult, &'view ValueSources)> {
+        flags
+            .iter()
+            .map(|flag| {
+                let Some((source_addr, source_expr, source_value_sources)) =
+                    self.try_expand_var(ir_flag_to_register(*flag).into())
+                else {
+                    eprintln!("Failed to get flag info for {} @ {}", flag, self.addr);
+                    return Err(());
+                };
+                let IrExpr::X86Flag(source_flag_result) = source_expr else { panic!() };
+                Ok((source_addr, source_flag_result, source_value_sources))
+            })
+            .reduce(|opt_tup1, opt_tup2| {
+                let (Ok(tup1), Ok(tup2)) = (opt_tup1, opt_tup2)
+                else { return Err(()) };
+
+                let flag_res1 = tup1.1;
+                let flag_res2 = tup2.1;
+                assert_eq!(
+                    (
+                        flag_res1.mnemonic,
+                        flag_res1.lhs,
+                        flag_res1.rhs,
+                        flag_res1.math_result
+                    ),
+                    (
+                        flag_res2.mnemonic,
+                        flag_res2.lhs,
+                        flag_res2.rhs,
+                        flag_res2.math_result
+                    ),
+                    "inconsistent complex flag infos"
+                );
+
+                Ok(tup1)
+            })
+            .unwrap()
+            .ok()
     }
 }
 
