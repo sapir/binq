@@ -2,3 +2,4 @@
 /ra_target
 
 .venv/
+__pycache__/
