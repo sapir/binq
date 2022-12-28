@@ -148,7 +148,7 @@ impl Database {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct StatementAddr {
     /// Address of the original assembly instruction
     pub asm_addr: Addr64,

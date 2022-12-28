@@ -19,7 +19,10 @@ use pyo3::{
 };
 use query::{search, Expr, ExprMatchFilter, Field};
 
-use self::{database::Database, ir::Addr64};
+use self::{
+    database::Database,
+    ir::{Addr64, Statement},
+};
 
 #[pyclass(name = "Expr")]
 #[derive(Clone)]
@@ -157,6 +160,20 @@ impl PyDatabase {
             .into_iter()
             .map(|StatementAddr { asm_addr, ir_index }| (asm_addr, ir_index))
             .collect())
+    }
+
+    fn print_il(&mut self) {
+        let mut stmts = self
+            .0
+            .world
+            .query_mut::<(&StatementAddr, &Statement)>()
+            .into_iter()
+            .map(|(_entity, (addr, stmt))| (addr, stmt))
+            .collect::<Vec<_>>();
+        stmts.sort_by_key(|(addr, _stmt)| *addr);
+        for (addr, stmt) in stmts {
+            println!("{}: {}", addr, stmt);
+        }
     }
 }
 
