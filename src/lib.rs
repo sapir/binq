@@ -177,20 +177,35 @@ impl PyDatabase {
     }
 
     fn search(&mut self, query: &PyDict) -> PyResult<Vec<(Addr64, usize)>> {
-        let filters = query
-            .iter()
-            .map(|(k, v)| -> PyResult<ExprMatchFilter> {
+        let filters = {
+            let mut filters = vec![];
+
+            for (k, v) in query {
                 let field: &str = k.extract()?;
-                let field: Field = field
-                    .parse()
-                    .map_err(|()| PyValueError::new_err("Bad field name"))?;
+                if field == "call_args" {
+                    // Special case: The value is a list of arguments
+                    let args: Vec<Option<PyExpr>> = v.extract()?;
 
-                let expr: PyExpr = v.extract()?;
-                let expr = expr.0;
+                    filters.extend(args.into_iter().enumerate().filter_map(|(i, arg)| {
+                        arg.map(|arg| ExprMatchFilter {
+                            field: Field::CallArg(i),
+                            expr: arg.0,
+                        })
+                    }));
+                } else {
+                    let field: Field = field
+                        .parse()
+                        .map_err(|()| PyValueError::new_err("Bad field name"))?;
 
-                Ok(ExprMatchFilter { field, expr })
-            })
-            .collect::<PyResult<Vec<_>>>()?;
+                    let expr: PyExpr = v.extract()?;
+                    let expr = expr.0;
+
+                    filters.push(ExprMatchFilter { field, expr });
+                }
+            }
+
+            filters
+        };
 
         Ok(search(&mut self.0, &filters)
             .into_iter()

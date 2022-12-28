@@ -22,28 +22,45 @@ pub enum Arch {
     X64,
 }
 
-impl FromStr for Arch {
+#[derive(Clone, Copy, Debug)]
+pub enum ArchAndAbi {
+    X86,
+    X64,
+    X64Windows,
+}
+
+impl ArchAndAbi {
+    pub fn arch(self) -> Arch {
+        match self {
+            ArchAndAbi::X86 => Arch::X86,
+            ArchAndAbi::X64 | ArchAndAbi::X64Windows => Arch::X64,
+        }
+    }
+}
+
+impl FromStr for ArchAndAbi {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "x86" => Ok(Self::X86),
             "x64" => Ok(Self::X64),
+            "x64-windows" => Ok(Self::X64Windows),
             _ => Err(()),
         }
     }
 }
 
 pub struct Database {
-    pub arch: Arch,
+    pub arch_and_abi: ArchAndAbi,
     pub world: World,
     pub addr_to_entity: HashMap<StatementAddr, Entity>,
 }
 
 impl Database {
-    pub fn new(arch: Arch) -> Self {
+    pub fn new(arch_and_abi: ArchAndAbi) -> Self {
         Self {
-            arch,
+            arch_and_abi,
             world: World::new(),
             addr_to_entity: HashMap::new(),
         }
@@ -55,7 +72,7 @@ impl Database {
     }
 
     pub fn add_func(&mut self, base_addr: Addr64, buf: &[u8], start_addr: Addr64) -> Result<()> {
-        let bitness = match self.arch {
+        let bitness = match self.arch_and_abi.arch() {
             Arch::X86 => 32,
             Arch::X64 => 64,
         };

@@ -771,4 +771,8 @@ impl<'db, 'view, 'query> ExprMatcher<'db, 'view, 'query> {
     ) -> bool {
         ExprMatcherAt::new(addr, value_sources, self).match_simple_expr(pattern_expr, ir_expr)
     }
+
+    pub fn database(&self) -> &'db Database {
+        self.database
+    }
 }

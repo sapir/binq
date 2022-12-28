@@ -136,6 +136,8 @@ pub fn analyze_data_flow(db: &mut Database) {
     }
 }
 
+/// Returns true if the variable is referenced by the statement and should
+/// therefore be tracked.
 fn uses_var(stmt: &Statement, var: Variable) -> bool {
     match stmt {
         Statement::Nop | Statement::ClearTemps => false,
@@ -143,7 +145,11 @@ fn uses_var(stmt: &Statement, var: Variable) -> bool {
         Statement::Store { addr, value } => {
             simple_expr_is_var(addr, var) || simple_expr_is_var(value, var)
         }
-        Statement::Call { target } => simple_expr_is_var(target, var),
+        Statement::Call { target } => {
+            // Registers can be used as arguments, but don't bother checking the
+            // ABI, instead just track all registers for calls.
+            matches!(var, Variable::Register(_)) || simple_expr_is_var(target, var)
+        }
         Statement::Jump {
             target,
             is_return: _,
