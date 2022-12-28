@@ -3,7 +3,6 @@ import sys
 import cle
 
 import binq
-from binq import Expr as E
 
 from test_cle import lift_object
 
