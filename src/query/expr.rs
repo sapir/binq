@@ -321,8 +321,8 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                 return true;
             }
 
-            let swapped_match = matcher.match_simple_expr(&pat_cond.lhs, &ir_op.lhs)
-                && matcher.match_simple_expr(&pat_cond.rhs, &ir_op.rhs);
+            let swapped_match = matcher.match_simple_expr(&pat_cond.lhs, &ir_op.rhs)
+                && matcher.match_simple_expr(&pat_cond.rhs, &ir_op.lhs);
             if pat_cond.kind == ir_op.kind && pat_cond.kind.is_symmetric() && swapped_match {
                 return true;
             }
