@@ -5,8 +5,9 @@ use crate::{
     analysis::data_flow::ValueSources,
     database::{Database, StatementAddr},
     ir::{
-        BinaryOp, BinaryOpKind, CompareOp, CompareOpKind, ComplexX86ConditionCode, Expr as IrExpr,
-        SimpleExpr, Statement, UnaryOp, UnaryOpKind, Variable, X86Flag, X86FlagResult,
+        Addr64, BinaryOp, BinaryOpKind, CompareOp, CompareOpKind, ComplexX86ConditionCode,
+        Expr as IrExpr, SimpleExpr, Statement, UnaryOp, UnaryOpKind, Variable, X86Flag,
+        X86FlagResult,
     },
     lifting::ir_flag_to_register,
 };
@@ -38,6 +39,25 @@ impl ConditionExpr {
             rhs: self.lhs.clone(),
         }
     }
+}
+
+#[derive(Clone, Debug)]
+pub enum MatchInfo {
+    Empty,
+    Condition(ConditionMatchInfo),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum ConditionJumpDir {
+    JumpIfTrue,
+    JumpIfFalse,
+}
+
+#[derive(Clone, Debug)]
+pub struct ConditionMatchInfo {
+    pub jump_dir: ConditionJumpDir,
+    pub true_addr: Addr64,
+    pub false_addr: Addr64,
 }
 
 // TODO: multiple sources are OK as long as they all expand to the same thing
@@ -78,27 +98,27 @@ impl Drop for ExprMatcherAt<'_, '_, '_, '_> {
 }
 
 impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
-    fn match_expr(&mut self, pattern_expr: &Expr, ir_expr: &IrExpr) -> bool {
+    fn match_expr(&mut self, pattern_expr: &Expr, ir_expr: &IrExpr) -> Option<MatchInfo> {
         match pattern_expr {
-            Expr::Any => true,
+            Expr::Any => Some(MatchInfo::Empty),
 
             Expr::AnyConst | Expr::Const(_) => {
                 if let Some(inner) = self.get_inner_simple_expr(ir_expr) {
                     self.match_simple_expr(pattern_expr, inner)
                 } else {
-                    false
+                    None
                 }
             }
 
             Expr::Deref(pat_inner) => match ir_expr {
                 IrExpr::Deref(ir_inner) => self.match_simple_expr(pat_inner, ir_inner),
 
-                _ => false,
+                _ => None,
             },
 
             Expr::Sum(inner_patterns) | Expr::Product(inner_patterns) => {
                 match inner_patterns.as_slice() {
-                    [] => false,
+                    [] => None,
 
                     [inner_pattern] => self.match_expr(inner_pattern, ir_expr),
 
@@ -112,7 +132,8 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                         if let IrExpr::BinaryOp(BinaryOp { op, lhs, rhs }) = ir_expr {
                             if *op == expected_op {
                                 for (lhs_index, lhs_pattern) in inner_patterns.iter().enumerate() {
-                                    if !self.match_simple_expr(lhs_pattern, lhs) {
+                                    // TODO: don't drop info?
+                                    if self.match_simple_expr(lhs_pattern, lhs).is_none() {
                                         continue;
                                     };
 
@@ -129,14 +150,15 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                                         _ => unreachable!(),
                                     };
 
-                                    if self.match_simple_expr(&rhs_pattern, rhs) {
-                                        return true;
+                                    // TODO: don't drop info?
+                                    if self.match_simple_expr(&rhs_pattern, rhs).is_some() {
+                                        return Some(MatchInfo::Empty);
                                     }
                                 }
                             }
                         }
 
-                        false
+                        None
                     }
                 }
             }
@@ -145,12 +167,16 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
         }
     }
 
-    fn match_condition_pattern(&mut self, pat_cond: &ConditionExpr, ir_expr: &IrExpr) -> bool {
+    fn match_condition_pattern(
+        &mut self,
+        pat_cond: &ConditionExpr,
+        ir_expr: &IrExpr,
+    ) -> Option<MatchInfo> {
         match ir_expr {
             IrExpr::Unknown
             | IrExpr::Deref(_)
             | IrExpr::BinaryOp(_)
-            | IrExpr::InsertBits { .. } => false,
+            | IrExpr::InsertBits { .. } => None,
 
             IrExpr::Simple(simple) => {
                 // TODO: don't clone :(
@@ -173,23 +199,33 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
         }
     }
 
-    fn match_simple_expr(&mut self, pattern_expr: &Expr, ir_expr: &SimpleExpr) -> bool {
+    fn match_simple_expr(
+        &mut self,
+        pattern_expr: &Expr,
+        ir_expr: &SimpleExpr,
+    ) -> Option<MatchInfo> {
         match (pattern_expr, ir_expr) {
-            (Expr::Any, _) => true,
+            (Expr::Any, _) => Some(MatchInfo::Empty),
 
             (_, SimpleExpr::Variable(ir_var)) => self.match_var(pattern_expr, *ir_var),
 
-            (Expr::AnyConst, SimpleExpr::Const(_)) => true,
+            (Expr::AnyConst, SimpleExpr::Const(_)) => Some(MatchInfo::Empty),
 
-            (Expr::Const(pat_x), SimpleExpr::Const(ir_x)) => *pat_x == *ir_x,
+            (Expr::Const(pat_x), SimpleExpr::Const(ir_x)) => {
+                if *pat_x == *ir_x {
+                    Some(MatchInfo::Empty)
+                } else {
+                    None
+                }
+            }
 
-            (Expr::Deref(_) | Expr::Condition(_), SimpleExpr::Const(_)) => false,
+            (Expr::Deref(_) | Expr::Condition(_), SimpleExpr::Const(_)) => None,
 
             (Expr::Sum(terms), ir_expr @ SimpleExpr::Const(_)) => {
                 if let [term] = &terms[..] {
                     self.match_simple_expr(term, ir_expr)
                 } else {
-                    false
+                    None
                 }
             }
 
@@ -197,7 +233,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                 if let [factor] = &factors[..] {
                     self.match_simple_expr(factor, ir_expr)
                 } else {
-                    false
+                    None
                 }
             }
         }
@@ -223,9 +259,9 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
         Some((source_addr, rhs, source_value_sources))
     }
 
-    fn match_var(&mut self, pattern_expr: &Expr, ir_var: Variable) -> bool {
+    fn match_var(&mut self, pattern_expr: &Expr, ir_var: Variable) -> Option<MatchInfo> {
         let Some((source_addr, source_expr, source_value_sources)) = self.try_expand_var(ir_var)
-        else { return false };
+        else { return None };
 
         ExprMatcherAt::new(source_addr, source_value_sources, self.matcher)
             .match_expr(pattern_expr, source_expr)
@@ -291,9 +327,9 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                 };
 
                 let const_pattern = Expr::Const(identity);
-                if self.match_simple_expr(&const_pattern, rhs) {
+                if self.match_simple_expr(&const_pattern, rhs).is_some() {
                     return Some(lhs);
-                } else if is_commutative && self.match_simple_expr(&const_pattern, lhs) {
+                } else if is_commutative && self.match_simple_expr(&const_pattern, lhs).is_some() {
                     return Some(rhs);
                 }
 
@@ -309,20 +345,32 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
         }
     }
 
-    fn match_compare_op(&mut self, pat_cond: &ConditionExpr, ir_op: &CompareOp) -> bool {
+    fn match_compare_op(
+        &mut self,
+        pat_cond: &ConditionExpr,
+        ir_op: &CompareOp,
+    ) -> Option<MatchInfo> {
         fn match_direct(
             matcher: &mut ExprMatcherAt,
             pat_cond: &ConditionExpr,
             ir_op: &CompareOp,
-        ) -> bool {
-            let unswapped_match = matcher.match_simple_expr(&pat_cond.lhs, &ir_op.lhs)
-                && matcher.match_simple_expr(&pat_cond.rhs, &ir_op.rhs);
+        ) -> Option<MatchInfo> {
+            let unswapped_match = matcher
+                .match_simple_expr(&pat_cond.lhs, &ir_op.lhs)
+                .is_some()
+                && matcher
+                    .match_simple_expr(&pat_cond.rhs, &ir_op.rhs)
+                    .is_some();
             if pat_cond.kind == ir_op.kind && unswapped_match {
                 return true;
             }
 
-            let swapped_match = matcher.match_simple_expr(&pat_cond.lhs, &ir_op.rhs)
-                && matcher.match_simple_expr(&pat_cond.rhs, &ir_op.lhs);
+            let swapped_match = matcher
+                .match_simple_expr(&pat_cond.lhs, &ir_op.rhs)
+                .is_some()
+                && matcher
+                    .match_simple_expr(&pat_cond.rhs, &ir_op.lhs)
+                    .is_some();
             if pat_cond.kind == ir_op.kind && pat_cond.kind.is_symmetric() && swapped_match {
                 return true;
             }
@@ -332,14 +380,14 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                 return true;
             }
 
-            false
+            None
         }
 
         fn match_direct_or_off_by_one(
             matcher: &mut ExprMatcherAt,
             pat_cond: &ConditionExpr,
             ir_op: &CompareOp,
-        ) -> bool {
+        ) -> Option<MatchInfo> {
             if match_direct(matcher, pat_cond, ir_op) {
                 return true;
             }
@@ -391,7 +439,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                 }
             }
 
-            false
+            None
         }
 
         if match_direct_or_off_by_one(self, pat_cond, ir_op) {
@@ -439,14 +487,14 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
             }
         }
 
-        false
+        None
     }
 
     fn match_x86_flag_condition(
         &mut self,
         pat_cond: &ConditionExpr,
         x86_flag_info: &X86FlagResult,
-    ) -> bool {
+    ) -> Option<MatchInfo> {
         let X86FlagResult {
             which_flag,
             mnemonic,
@@ -561,14 +609,14 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
             X86Flag::OF => todo!("OF as condition @ {}", self.addr),
         }
 
-        false
+        None
     }
 
     fn match_complex_x86_flag_condition(
         &mut self,
         pat_cond: &ConditionExpr,
         cc: ComplexX86ConditionCode,
-    ) -> bool {
+    ) -> Option<MatchInfo> {
         let Some((source_addr, source_flag_result, source_value_sources)) = self
             .get_complex_x86_flag_result(match cc {
                 ComplexX86ConditionCode::Be => &[X86Flag::CF, X86Flag::ZF],
@@ -577,7 +625,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
             })
         else {
             eprintln!("Failed to get flags for {:?} @ {}", cc, self.addr);
-            return false
+            return None;
         };
 
         let X86FlagResult {
@@ -684,7 +732,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
             }
         }
 
-        false
+        None
     }
 
     /// Calls `try_expand_var` for the given flags, and return one of the
@@ -764,7 +812,7 @@ impl<'db, 'view, 'query> ExprMatcher<'db, 'view, 'query> {
         value_sources: &ValueSources,
         pattern_expr: &Expr,
         ir_expr: &IrExpr,
-    ) -> bool {
+    ) -> Option<MatchInfo> {
         ExprMatcherAt::new(addr, value_sources, self).match_expr(pattern_expr, ir_expr)
     }
 
@@ -774,7 +822,7 @@ impl<'db, 'view, 'query> ExprMatcher<'db, 'view, 'query> {
         value_sources: &ValueSources,
         pattern_expr: &Expr,
         ir_expr: &SimpleExpr,
-    ) -> bool {
+    ) -> Option<MatchInfo> {
         ExprMatcherAt::new(addr, value_sources, self).match_simple_expr(pattern_expr, ir_expr)
     }
 
