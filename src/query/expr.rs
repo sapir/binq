@@ -702,7 +702,13 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                     eprintln!("Failed to get flag info for {} @ {}", flag, self.addr);
                     return Err(());
                 };
-                let IrExpr::X86Flag(source_flag_result) = source_expr else { panic!() };
+
+                let IrExpr::X86Flag(source_flag_result) = source_expr
+                else {
+                    eprintln!("Expected flag expression @ {}, got {:?}", source_addr, source_expr);
+                    return Err(());
+                };
+
                 Ok((source_addr, source_flag_result, source_value_sources))
             })
             .reduce(|opt_tup1, opt_tup2| {
