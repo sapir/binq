@@ -427,8 +427,9 @@ impl<'a> X86Lifter<'a> {
                 self.cur_insn.near_branch_target()
             }
 
-            // TODO
-            OpKind::FarBranch16 | OpKind::FarBranch32 => todo!("far branch"),
+            // TODO: include the selector somehow
+            OpKind::FarBranch16 => self.cur_insn.far_branch16().into(),
+            OpKind::FarBranch32 => self.cur_insn.far_branch32().into(),
 
             OpKind::Immediate8 => self.cur_insn.immediate8().into(),
             OpKind::Immediate8_2nd => self.cur_insn.immediate8_2nd().into(),
