@@ -149,9 +149,20 @@ impl<'a> X86Lifter<'a> {
                 out.push(Statement::Assign { lhs, rhs });
             }
 
-            Add | Adc | Sub | Cmp | Sbb | Shl | Shr | Sar | Rol | Ror | And | Test | Or | Xor => {
-                let rhs = self.op_to_expr(out, 1);
-                let rhs = out.expr_to_simple(rhs);
+            Add | Adc | Sub | Cmp | Sbb | Inc | Dec | Shl | Shr | Sar | Rol | Ror | And | Test
+            | Or | Xor => {
+                let rhs = match mnemonic {
+                    Inc | Dec => {
+                        debug_assert_eq!(self.cur_insn.op_count(), 1);
+                        SimpleExpr::Const(1)
+                    }
+
+                    _ => {
+                        debug_assert_eq!(self.cur_insn.op_count(), 2);
+                        let rhs = self.op_to_expr(out, 1);
+                        out.expr_to_simple(rhs)
+                    }
+                };
 
                 let lhs: SimpleExpr;
                 let lvalue: Lvalue;
@@ -200,8 +211,8 @@ impl<'a> X86Lifter<'a> {
 
                     _ => {
                         let op = match mnemonic {
-                            Add => BinaryOpKind::Add,
-                            Sub | Cmp => BinaryOpKind::Sub,
+                            Add | Inc => BinaryOpKind::Add,
+                            Sub | Cmp | Dec => BinaryOpKind::Sub,
                             Shl => BinaryOpKind::Shl,
                             Shr => BinaryOpKind::Shr,
                             Sar => BinaryOpKind::Sar,
