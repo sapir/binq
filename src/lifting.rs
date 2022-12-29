@@ -7,9 +7,8 @@ use iced_x86::{
 use crate::{
     database::{NextStatementAddr, StatementAddr},
     ir::{
-        Addr64, BinaryOp, BinaryOpKind, CompareOp, CompareOpKind, ComplexX86ConditionCode, Const,
-        Expr, Register, SimpleExpr, Statement, Temp, UnaryOp, UnaryOpKind, Variable, X86Flag,
-        X86FlagResult,
+        Addr64, BinaryOp, BinaryOpKind, ComplexX86ConditionCode, Const, Expr, Register, SimpleExpr,
+        Statement, Temp, UnaryOp, UnaryOpKind, Variable, X86Flag, X86FlagResult,
     },
 };
 
@@ -533,32 +532,6 @@ impl<'a> X86Lifter<'a> {
             lhs: reg.into(),
             rhs: value,
         });
-    }
-
-    fn set_sf(&mut self, out: &mut Output, for_value: SimpleExpr) {
-        self.set_flag(
-            out,
-            Rflag::SF,
-            REG_SF,
-            Expr::CompareOp(CompareOp {
-                kind: CompareOpKind::LessThanSigned,
-                lhs: for_value,
-                rhs: 0.into(),
-            }),
-        );
-    }
-
-    fn set_zf(&mut self, out: &mut Output, for_value: SimpleExpr) {
-        self.set_flag(
-            out,
-            Rflag::ZF,
-            REG_ZF,
-            Expr::CompareOp(CompareOp {
-                kind: CompareOpKind::NotEqual,
-                lhs: for_value,
-                rhs: 0.into(),
-            }),
-        );
     }
 
     fn set_flags_to_unknown(&mut self, out: &mut Output, bits: u32) {

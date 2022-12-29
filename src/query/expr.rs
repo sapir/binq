@@ -19,7 +19,6 @@ pub enum Expr {
     Deref(Box<Expr>),
     Sum(Vec<Expr>),
     Product(Vec<Expr>),
-    Condition(Box<ConditionExpr>),
 }
 
 #[derive(Clone, Debug)]
@@ -140,26 +139,18 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                     }
                 }
             }
-
-            Expr::Condition(pat_cond) => self.match_condition_pattern(pat_cond, ir_expr),
         }
     }
 
     fn match_condition_pattern(&mut self, pat_cond: &ConditionExpr, ir_expr: &IrExpr) -> bool {
         match ir_expr {
             IrExpr::Unknown
+            | IrExpr::Simple(_)
             | IrExpr::Deref(_)
             | IrExpr::BinaryOp(_)
             | IrExpr::InsertBits { .. } => false,
 
-            IrExpr::Simple(simple) => {
-                // TODO: don't clone :(
-                let pattern_expr = Expr::Condition(Box::new(pat_cond.clone()));
-                self.match_simple_expr(&pattern_expr, simple)
-            }
-
-            IrExpr::CompareOp(ir_op) => self.match_compare_op(pat_cond, ir_op),
-
+            // IrExpr::CompareOp(ir_op) => self.match_compare_op(pat_cond, ir_op),
             IrExpr::X86Flag(flag_result) => self.match_x86_flag_condition(pat_cond, flag_result),
 
             IrExpr::ComplexX86ConditionCode(cc) => {
@@ -183,7 +174,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
 
             (Expr::Const(pat_x), SimpleExpr::Const(ir_x)) => *pat_x == *ir_x,
 
-            (Expr::Deref(_) | Expr::Condition(_), SimpleExpr::Const(_)) => false,
+            (Expr::Deref(_), SimpleExpr::Const(_)) => false,
 
             (Expr::Sum(terms), ir_expr @ SimpleExpr::Const(_)) => {
                 if let [term] = &terms[..] {
@@ -302,7 +293,6 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
 
             IrExpr::Deref(_)
             | IrExpr::UnaryOp(_)
-            | IrExpr::CompareOp(_)
             | IrExpr::InsertBits { .. }
             | IrExpr::X86Flag { .. }
             | IrExpr::ComplexX86ConditionCode(_) => None,

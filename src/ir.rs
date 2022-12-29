@@ -304,7 +304,6 @@ pub enum Expr {
     Deref(SimpleExpr),
     UnaryOp(UnaryOp),
     BinaryOp(BinaryOp),
-    CompareOp(CompareOp),
     /// `lhs` with `num_bits` bits shifted left by `shift`, replaced by `rhs`
     /// (also shifted left by `shift`)
     InsertBits {
@@ -334,7 +333,6 @@ impl Display for Expr {
             Expr::Deref(x) => write!(f, "*{}", x),
             Expr::UnaryOp(op) => op.fmt(f),
             Expr::BinaryOp(op) => op.fmt(f),
-            Expr::CompareOp(op) => op.fmt(f),
             Expr::InsertBits {
                 lhs,
                 shift,

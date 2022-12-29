@@ -2,7 +2,7 @@ use hecs::{Entity, World};
 
 use crate::{
     database::{Database, StatementAddr},
-    ir::{BinaryOp, CompareOp, Expr, SimpleExpr, Statement, UnaryOp, Variable, X86FlagResult},
+    ir::{BinaryOp, Expr, SimpleExpr, Statement, UnaryOp, Variable, X86FlagResult},
     lifting::{REG_CF, REG_OF, REG_SF, REG_ZF},
     utils::small_multi_map::SmallMultiMap,
 };
@@ -174,8 +174,7 @@ fn expr_uses_var(expr: &Expr, var: Variable) -> bool {
             simple_expr_is_var(x, var)
         }
 
-        Expr::BinaryOp(BinaryOp { op: _, lhs, rhs })
-        | Expr::CompareOp(CompareOp { kind: _, lhs, rhs }) => {
+        Expr::BinaryOp(BinaryOp { op: _, lhs, rhs }) => {
             simple_expr_is_var(lhs, var) || simple_expr_is_var(rhs, var)
         }
 
