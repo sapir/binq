@@ -122,7 +122,8 @@ impl<'a> X86Lifter<'a> {
 
         let mnemonic = self.cur_insn.mnemonic();
         match mnemonic {
-            Mov => {
+            // TODO: movsx and movzx aren't the same thing as mov
+            Mov | Movsx | Movzx => {
                 let rhs = self.op_to_expr(out, 1);
 
                 match self.rough_op_kind(0) {
