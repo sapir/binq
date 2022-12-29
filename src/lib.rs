@@ -165,6 +165,10 @@ impl PyDatabase {
         Ok(Self(Database::new(arch)))
     }
 
+    fn add_buf(&mut self, addr: Addr64, buf: &[u8]) -> PyResult<()> {
+        self.0.add_buf(addr, buf).map_err(PyErr::from)
+    }
+
     #[args(start_addr = "None")]
     fn add_func(&mut self, base_addr: Addr64, buf: &[u8], start_addr: Option<u64>) -> PyResult<()> {
         self.0

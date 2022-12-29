@@ -71,12 +71,28 @@ impl Database {
             .contains_key(&StatementAddr::new_first(addr))
     }
 
-    pub fn add_func(&mut self, base_addr: Addr64, buf: &[u8], start_addr: Addr64) -> Result<()> {
+    fn make_lifter<'a>(&self, addr: Addr64, buf: &'a [u8]) -> X86Lifter<'a> {
         let bitness = match self.arch_and_abi.arch() {
             Arch::X86 => 32,
             Arch::X64 => 64,
         };
-        let mut lifter = X86Lifter::new(bitness, buf, base_addr);
+        X86Lifter::new(bitness, buf, addr)
+    }
+
+    pub fn add_buf(&mut self, addr: Addr64, buf: &[u8]) -> Result<()> {
+        let mut lifter = self.make_lifter(addr, buf);
+        let buf_end_addr = addr + Addr64::try_from(buf.len()).unwrap();
+
+        while lifter.cur_addr() < buf_end_addr {
+            let stmts = lifter.lift_block(|_stmt_addr| false)?;
+            self.add_block(stmts);
+        }
+
+        Ok(())
+    }
+
+    pub fn add_func(&mut self, base_addr: Addr64, buf: &[u8], start_addr: Addr64) -> Result<()> {
+        let mut lifter = self.make_lifter(base_addr, buf);
         let buf_end_addr = base_addr + Addr64::try_from(buf.len()).unwrap();
 
         let mut todo = vec![start_addr];
