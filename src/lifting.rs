@@ -8,8 +8,8 @@ use crate::{
     database::{NextStatementAddr, StatementAddr},
     ir::{
         Addr64, BinaryOp, BinaryOpKind, CompareOp, CompareOpKind, ComplexX86ConditionCode, Const,
-        Expr, Register, SimpleExpr, Statement, Temp, UnaryOp, UnaryOpKind, Variable, X86Flag,
-        X86FlagResult,
+        Expr, ExtendKind, ExtendOp, Register, SimpleExpr, Statement, Temp, UnaryOp, UnaryOpKind,
+        Variable, X86Flag, X86FlagResult,
     },
 };
 
@@ -122,9 +122,21 @@ impl<'a> X86Lifter<'a> {
 
         let mnemonic = self.cur_insn.mnemonic();
         match mnemonic {
-            // TODO: movsx and movzx aren't the same thing as mov
             Mov | Movsx | Movzx => {
-                let rhs = self.op_to_expr(out, 1);
+                let mut rhs = self.op_to_expr(out, 1);
+
+                let extend_kind = match mnemonic {
+                    Mov => None,
+                    Movsx => Some(ExtendKind::SignExtend),
+                    Movzx => Some(ExtendKind::ZeroExtend),
+                    _ => unreachable!(),
+                };
+                if let Some(extend_kind) = extend_kind {
+                    rhs = Expr::Extend(ExtendOp {
+                        kind: extend_kind,
+                        inner: out.expr_to_simple(rhs),
+                    });
+                }
 
                 match self.rough_op_kind(0) {
                     RoughOpKind::Register => {

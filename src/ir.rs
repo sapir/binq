@@ -114,6 +114,32 @@ impl Display for SimpleExpr {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum ExtendKind {
+    ZeroExtend,
+    SignExtend,
+}
+
+#[derive(Clone, Debug)]
+pub struct ExtendOp {
+    pub kind: ExtendKind,
+    pub inner: SimpleExpr,
+}
+
+impl Display for ExtendOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}({})",
+            match self.kind {
+                ExtendKind::ZeroExtend => "zero_extend",
+                ExtendKind::SignExtend => "sign_extend",
+            },
+            self.inner
+        )
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnaryOpKind {
     Not,
@@ -301,6 +327,7 @@ impl Display for ComplexX86ConditionCode {
 pub enum Expr {
     Unknown,
     Simple(SimpleExpr),
+    Extend(ExtendOp),
     Deref(SimpleExpr),
     UnaryOp(UnaryOp),
     BinaryOp(BinaryOp),
@@ -335,6 +362,7 @@ impl Display for Expr {
             Expr::UnaryOp(op) => op.fmt(f),
             Expr::BinaryOp(op) => op.fmt(f),
             Expr::CompareOp(op) => op.fmt(f),
+            Expr::Extend(op) => op.fmt(f),
             Expr::InsertBits {
                 lhs,
                 shift,

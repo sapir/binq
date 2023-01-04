@@ -6,7 +6,7 @@ use crate::{
     database::{Database, StatementAddr},
     ir::{
         BinaryOp, BinaryOpKind, CompareOp, CompareOpKind, ComplexX86ConditionCode, Expr as IrExpr,
-        SimpleExpr, Statement, UnaryOp, UnaryOpKind, Variable, X86Flag, X86FlagResult,
+        ExtendOp, SimpleExpr, Statement, UnaryOp, UnaryOpKind, Variable, X86Flag, X86FlagResult,
     },
     lifting::ir_flag_to_register,
 };
@@ -152,7 +152,13 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
             | IrExpr::BinaryOp(_)
             | IrExpr::InsertBits { .. } => false,
 
-            IrExpr::Simple(simple) => {
+            IrExpr::Simple(simple)
+            // Any extension of a boolean value can also be treated as a boolean
+            // value, so just ignore the extension part.
+            | IrExpr::Extend(ExtendOp {
+                kind: _,
+                inner: simple,
+            }) => {
                 // TODO: don't clone :(
                 let pattern_expr = Expr::Condition(Box::new(pat_cond.clone()));
                 self.match_simple_expr(&pattern_expr, simple)
@@ -236,6 +242,9 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
             IrExpr::Unknown => None,
 
             IrExpr::Simple(inner) => Some(inner),
+
+            // TODO: the value may change in the process
+            IrExpr::Extend(ExtendOp { kind: _, inner }) => Some(inner),
 
             IrExpr::BinaryOp(BinaryOp { op, lhs, rhs }) => {
                 if lhs == rhs {
