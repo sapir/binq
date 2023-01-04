@@ -227,7 +227,7 @@ impl PyDatabase {
             .collect::<Vec<_>>();
         stmts.sort_by_key(|(addr, _stmt)| *addr);
         for (addr, stmt) in stmts {
-            println!("{}: {}", addr, stmt);
+            println!("{addr}: {stmt}");
         }
     }
 }

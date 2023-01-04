@@ -108,7 +108,7 @@ impl From<Variable> for SimpleExpr {
 impl Display for SimpleExpr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            SimpleExpr::Const(x) => write!(f, "{:#x}", x),
+            SimpleExpr::Const(x) => write!(f, "{x:#x}"),
             SimpleExpr::Variable(x) => x.fmt(f),
         }
     }
@@ -249,7 +249,7 @@ pub enum X86Flag {
 
 impl Display for X86Flag {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self)
+        write!(f, "{self:?}")
     }
 }
 
@@ -331,7 +331,7 @@ impl Display for Expr {
         match self {
             Expr::Unknown => write!(f, "unknown"),
             Expr::Simple(x) => x.fmt(f),
-            Expr::Deref(x) => write!(f, "*{}", x),
+            Expr::Deref(x) => write!(f, "*{x}"),
             Expr::UnaryOp(op) => op.fmt(f),
             Expr::BinaryOp(op) => op.fmt(f),
             Expr::CompareOp(op) => op.fmt(f),
@@ -340,7 +340,7 @@ impl Display for Expr {
                 shift,
                 num_bits,
                 rhs,
-            } => write!(f, "insert_bits({}, {}, {}, {})", lhs, shift, num_bits, rhs),
+            } => write!(f, "insert_bits({lhs}, {shift}, {num_bits}, {rhs})"),
             Expr::X86Flag(flag_result) => flag_result.fmt(f),
             Expr::ComplexX86ConditionCode(cc) => cc.fmt(f),
         }
@@ -380,22 +380,22 @@ impl Display for Statement {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Statement::Nop => write!(f, "nop"),
-            Statement::Assign { lhs, rhs } => write!(f, "{} = {}", lhs, rhs),
-            Statement::Store { addr, value } => write!(f, "*{} = {}", addr, value),
-            Statement::Call { target } => write!(f, "call {}", target),
+            Statement::Assign { lhs, rhs } => write!(f, "{lhs} = {rhs}"),
+            Statement::Store { addr, value } => write!(f, "*{addr} = {value}"),
+            Statement::Call { target } => write!(f, "call {target}"),
             Statement::Jump {
                 target,
                 is_return,
                 condition,
             } => {
                 if *is_return {
-                    write!(f, "ret to {}", target)?;
+                    write!(f, "ret to {target}")?;
                 } else {
-                    write!(f, "jmp {}", target)?;
+                    write!(f, "jmp {target}")?;
                 }
 
                 if let Some(condition) = condition {
-                    write!(f, " if {}", condition)?;
+                    write!(f, " if {condition}")?;
                 }
 
                 Ok(())

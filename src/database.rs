@@ -173,8 +173,7 @@ impl Database {
 
             if let Some(old_entity) = old_entity {
                 panic!(
-                    "Statement @ {:?} was lifted twice (entities {:?} and {:?})",
-                    addr, old_entity, entity
+                    "Statement @ {addr:?} was lifted twice (entities {old_entity:?} and {entity:?})"
                 );
             }
         }

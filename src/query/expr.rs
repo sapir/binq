@@ -705,7 +705,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
 
                 let IrExpr::X86Flag(source_flag_result) = source_expr
                 else {
-                    eprintln!("Expected flag expression @ {}, got {:?}", source_addr, source_expr);
+                    eprintln!("Expected flag expression @ {source_addr}, got {source_expr:?}");
                     return Err(());
                 };
 
