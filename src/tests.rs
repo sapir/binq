@@ -8,9 +8,9 @@ use itertools::Itertools;
 use crate::{
     analysis::analyze,
     database::{ArchAndAbi, Database, StatementAddr},
-    ir::Addr64,
+    ir::{Addr64, CompareOpKind},
     print_il,
-    query::{search, Expr, ExprMatchFilter, Field},
+    query::{search, ConditionExpr, Expr, ExprMatchFilter, Field},
 };
 
 const BASE_ADDR: Addr64 = 0x1000;
@@ -116,8 +116,8 @@ fn asm_addrs(stmt_addrs: impl IntoIterator<Item = StatementAddr>) -> Vec<Addr64>
         .collect()
 }
 
-macro_rules! assert_match {
-    ($mut_db:expr, $field:expr, $expr:expr) => {
+macro_rules! assert_match_at {
+    ($mut_db:expr, $field:expr, $expr:expr, $addr:expr) => {
         assert_eq!(
             asm_addrs(search(
                 $mut_db,
@@ -126,16 +126,26 @@ macro_rules! assert_match {
                     expr: $expr
                 }]
             )),
-            [BASE_ADDR],
+            [$addr],
             "{:x?} should have matched exactly once @ {:#x} but it didn't",
             $expr,
-            BASE_ADDR,
+            $addr,
         );
     };
 
-    ($arch_and_abi:expr, $code:expr, $field:expr, $expr:expr) => {
+    ($arch_and_abi:expr, $code:expr, $field:expr, $expr:expr, $addr:expr) => {
         let mut db = assemble_to_db($arch_and_abi, $code);
-        assert_match!(&mut db, $field, $expr);
+        assert_match_at!(&mut db, $field, $expr, $addr);
+    };
+}
+
+macro_rules! assert_match {
+    ($mut_db:expr, $field:expr, $expr:expr) => {
+        assert_match_at!($mut_db, $field, $expr, BASE_ADDR);
+    };
+
+    ($arch_and_abi:expr, $code:expr, $field:expr, $expr:expr) => {
+        assert_match_at!($arch_and_abi, $code, $field, $expr, BASE_ADDR);
     };
 }
 
@@ -180,5 +190,132 @@ fn match_const() {
         "mov %rax, 100",
         Field::Value,
         Expr::Const(99)
+    );
+}
+
+#[test]
+fn match_const_in_partial_register_simple() {
+    assert_match!(ArchAndAbi::X64, "mov %al, 5", Field::Value, Expr::AnyConst);
+    assert_match!(ArchAndAbi::X64, "mov %ah, 5", Field::Value, Expr::AnyConst);
+
+    assert_match!(ArchAndAbi::X64, "mov %al, 5", Field::Value, Expr::Const(5));
+    assert_match!(ArchAndAbi::X64, "mov %ah, 5", Field::Value, Expr::Const(5));
+}
+
+#[test]
+fn match_const_in_partial_register_extending() {
+    // mov %al, -1 should match the 8-bit -1, but also the 64-bit -1 - even in
+    // 32-bit mode (because the pattern is 64-bit anyway).
+
+    // Match 8-bit -1 value with 0xff
+    assert_match!(
+        ArchAndAbi::X64,
+        "mov %al, -1",
+        Field::Value,
+        Expr::Const(0xff)
+    );
+
+    // Match 8-bit -1 value with AnyConst, too.
+    assert_match!(ArchAndAbi::X64, "mov %al, -1", Field::Value, Expr::AnyConst);
+
+    // Match 8-bit -1 value with a 64-bit -1 pattern, even in 32-bit mode
+    assert_match!(
+        ArchAndAbi::X64,
+        "mov %al, -1",
+        Field::Value,
+        Expr::Const(u64::MAX)
+    );
+    assert_match!(
+        ArchAndAbi::X86,
+        "mov %al, -1",
+        Field::Value,
+        Expr::Const(u64::MAX)
+    );
+}
+
+#[test]
+fn match_two_part_consts() {
+    assert_match_at!(
+        ArchAndAbi::X64,
+        "
+        mov %al, 1
+        mov %ah, 1
+        ",
+        Field::Value,
+        Expr::Const(0x101),
+        BASE_ADDR + 2
+    );
+    assert_match_at!(
+        ArchAndAbi::X64,
+        "
+        mov %ah, 1
+        mov %al, 1
+        ",
+        Field::Value,
+        Expr::Const(0x101),
+        BASE_ADDR + 2
+    );
+
+    assert_match_at!(
+        ArchAndAbi::X64,
+        "
+        mov %rax, 0x10000
+        mov %al, 1
+        ",
+        Field::Value,
+        Expr::Const(0x10001),
+        BASE_ADDR + 7
+    );
+    assert_match_at!(
+        ArchAndAbi::X64,
+        "
+        mov %rax, 0x10000
+        mov %ah, 1
+        ",
+        Field::Value,
+        Expr::Const(0x10100),
+        BASE_ADDR + 7
+    );
+
+    // "mov %eax, 0x10000 ; mov %al, 1" should match 0x10001, both in 32- and
+    // 64-bit mode
+    assert_match_at!(
+        ArchAndAbi::X86,
+        "
+        mov %eax, 0x10000
+        mov %al, 1
+        ",
+        Field::Value,
+        Expr::Const(0x10001),
+        BASE_ADDR + 5
+    );
+    assert_match_at!(
+        ArchAndAbi::X64,
+        "
+        mov %eax, 0x10000
+        mov %al, 1
+        ",
+        Field::Value,
+        Expr::Const(0x10001),
+        BASE_ADDR + 5
+    );
+}
+
+#[test]
+fn match_const_in_partial_reg_condition() {
+    assert_match_at!(
+        ArchAndAbi::X64,
+        "
+        mov %rax, 1
+        test %al, %al
+        jne 0x1200
+        ",
+        Field::Condition,
+        Expr::Condition(Box::new(ConditionExpr {
+            kind: CompareOpKind::NotEqual,
+            lhs: Expr::Const(1),
+            rhs: Expr::Const(0),
+        })),
+        BASE_ADDR + 9
     );
 }
