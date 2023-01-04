@@ -361,7 +361,6 @@ pub enum Statement {
         value: SimpleExpr,
     },
 
-    // TODO: abi info?
     Call {
         target: SimpleExpr,
     },
@@ -372,7 +371,6 @@ pub enum Statement {
         condition: Option<SimpleExpr>,
     },
 
-    // TODO: affected regs
     Intrinsic,
 
     ClearTemps,
