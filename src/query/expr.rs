@@ -458,7 +458,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
         match which_flag {
             // S = (math result < 0)
             X86Flag::SF => {
-                if mnemonic == Mnemonic::Sub {
+                if matches!(mnemonic, Mnemonic::Sub | Mnemonic::Dec) {
                     if self.match_compare_op(
                         pat_cond,
                         &CompareOp {
@@ -513,7 +513,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
 
             X86Flag::CF => match mnemonic {
                 // C of sub = LessThanUnsigned
-                Mnemonic::Sub => {
+                Mnemonic::Sub | Mnemonic::Dec => {
                     if self.match_compare_op(
                         pat_cond,
                         &CompareOp {
@@ -528,7 +528,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
 
                 // There's a carry in addition iff `result ltu lhs`, and also
                 // iff `result ltu rhs` (if I'm not mistaken).
-                Mnemonic::Add => {
+                Mnemonic::Add | Mnemonic::Inc => {
                     if self.match_compare_op(
                         pat_cond,
                         &CompareOp {
@@ -594,7 +594,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
         match (cc, mnemonic) {
             // BE = C or Z i.e. LessThanOrEqualUnsigned when C =
             // LessThanUnsigned
-            (ComplexX86ConditionCode::Be, Mnemonic::Sub) => {
+            (ComplexX86ConditionCode::Be, Mnemonic::Sub | Mnemonic::Dec) => {
                 if source_matcher.match_compare_op(
                     pat_cond,
                     &CompareOp {
@@ -622,7 +622,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                 );
             }
 
-            (ComplexX86ConditionCode::L, Mnemonic::Sub) => {
+            (ComplexX86ConditionCode::L, Mnemonic::Sub | Mnemonic::Dec) => {
                 if source_matcher.match_compare_op(
                     pat_cond,
                     &CompareOp {
@@ -649,7 +649,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                 );
             }
 
-            (ComplexX86ConditionCode::Le, Mnemonic::Sub) => {
+            (ComplexX86ConditionCode::Le, Mnemonic::Sub | Mnemonic::Dec) => {
                 if source_matcher.match_compare_op(
                     pat_cond,
                     &CompareOp {
