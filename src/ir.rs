@@ -49,6 +49,14 @@ impl Variable {
     pub fn new_temp() -> Self {
         Self::Temp(Temp::new())
     }
+
+    pub fn register(self) -> Option<Register> {
+        if let Variable::Register(reg) = self {
+            Some(reg)
+        } else {
+            None
+        }
+    }
 }
 
 impl From<Register> for Variable {
@@ -335,13 +343,19 @@ pub enum Expr {
     UnaryOp(UnaryOp),
     BinaryOp(BinaryOp),
     CompareOp(CompareOp),
-    /// `lhs` with `num_bits` bits shifted left by `shift`, replaced by `rhs`
-    /// (also shifted left by `shift`)
+    /// `lhs`, with `num_bits` bits shifted left by `shift` replaced by `rhs`
+    /// (which is also shifted left by `shift`).
     InsertBits {
         lhs: SimpleExpr,
         shift: u8,
         num_bits: u8,
         rhs: SimpleExpr,
+    },
+    /// Get `num_bits` bits from `inner`, starting at bit number `shift`.
+    ExtractBits {
+        inner: SimpleExpr,
+        shift: u8,
+        num_bits: u8,
     },
     X86Flag(X86FlagResult),
     ComplexX86ConditionCode(ComplexX86ConditionCode),
@@ -375,6 +389,11 @@ impl Display for Expr {
                 num_bits,
                 rhs,
             } => write!(f, "insert_bits({lhs}, {shift}, {num_bits}, {rhs})"),
+            Expr::ExtractBits {
+                inner,
+                shift,
+                num_bits,
+            } => write!(f, "extract_bits({inner}, {shift}, {num_bits})"),
             Expr::X86Flag(flag_result) => flag_result.fmt(f),
             Expr::ComplexX86ConditionCode(cc) => cc.fmt(f),
         }

@@ -181,7 +181,12 @@ fn expr_uses_var(expr: &Expr, var: Variable) -> bool {
             ptr: x,
             size_bytes: _,
         }
-        | Expr::UnaryOp(UnaryOp { op: _, value: x }) => simple_expr_is_var(x, var),
+        | Expr::UnaryOp(UnaryOp { op: _, value: x })
+        | Expr::ExtractBits {
+            inner: x,
+            shift: _,
+            num_bits: _,
+        } => simple_expr_is_var(x, var),
 
         Expr::BinaryOp(BinaryOp { op: _, lhs, rhs })
         | Expr::CompareOp(CompareOp { kind: _, lhs, rhs }) => {

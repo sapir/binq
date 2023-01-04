@@ -140,8 +140,8 @@ impl<'a> X86Lifter<'a> {
 
                 match self.rough_op_kind(0) {
                     RoughOpKind::Register => {
-                        let lhs = self.op_to_reg(0).into();
-                        out.push(Statement::Assign { lhs, rhs });
+                        let lhs = self.op_to_raw_reg(0).into();
+                        out.push_assign(lhs, rhs);
                     }
 
                     // You can't set an immediate value to anything.
@@ -162,7 +162,9 @@ impl<'a> X86Lifter<'a> {
 
             Lea => {
                 let rhs = self.memory_access(1).to_addr_simple_expr(out).into();
-                let lhs = self.op_to_reg(0).into();
+                let lhs = self.op_to_raw_reg(0).into();
+                // TODO: zero-extend or truncate if not the same size. note that
+                // size for addr may be 32-bit even in 64-bit mode.
                 out.push(Statement::Assign { lhs, rhs });
             }
 
@@ -185,7 +187,7 @@ impl<'a> X86Lifter<'a> {
                 let lvalue: Lvalue;
                 match self.rough_op_kind(0) {
                     RoughOpKind::Register => {
-                        let lhs_var = Variable::Register(self.op_to_reg(0));
+                        let lhs_var = Variable::Register(self.op_to_raw_reg(0));
                         lhs = SimpleExpr::Variable(lhs_var);
                         lvalue = Lvalue::Variable(lhs_var);
                     }
@@ -277,7 +279,7 @@ impl<'a> X86Lifter<'a> {
                 }
 
                 if !matches!(mnemonic, Cmp | Test) {
-                    out.push(lvalue.make_assign_stmt(value.into()));
+                    out.push_assign_lvalue(lvalue, value.into());
                 }
             }
 
@@ -288,12 +290,9 @@ impl<'a> X86Lifter<'a> {
             }
 
             Pop => {
-                let lhs = self.op_to_reg(0);
+                let lhs = self.op_to_raw_reg(0);
                 let rhs = out.pop_from_stack();
-                out.push(Statement::Assign {
-                    lhs: lhs.into(),
-                    rhs: rhs.into(),
-                });
+                out.push_assign(lhs.into(), rhs.into());
             }
 
             // jp and jnp aren't implemented
@@ -333,7 +332,7 @@ impl<'a> X86Lifter<'a> {
             // setp and setnp aren't implemented
             Seto | Setno | Setb | Setae | Sete | Setne | Setbe | Seta | Sets | Setns | Setl
             | Setge | Setle | Setg => {
-                let reg = self.op_to_reg(0);
+                let lhs = self.op_to_raw_reg(0);
 
                 let value = match mnemonic {
                     Seto => out.cc_expr(ConditionCode::O),
@@ -353,10 +352,7 @@ impl<'a> X86Lifter<'a> {
                     _ => unreachable!(),
                 };
 
-                out.push(Statement::Assign {
-                    lhs: reg.into(),
-                    rhs: value,
-                });
+                out.push_assign(lhs.into(), value);
             }
 
             Call => {
@@ -405,10 +401,7 @@ impl<'a> X86Lifter<'a> {
                         | OpAccess::ReadCondWrite => {
                             // Register is written but we aren't implementing
                             // it, so set it to "unknown".
-                            out.push(Statement::Assign {
-                                lhs: wrap_x86_reg(reg.register()).into(),
-                                rhs: Expr::Unknown,
-                            });
+                            out.push_assign(wrap_x86_reg(reg.register()).into(), Expr::Unknown);
                         }
 
                         OpAccess::None
@@ -448,9 +441,34 @@ impl<'a> X86Lifter<'a> {
         RoughOpKind::of(self.op_kind(index))
     }
 
-    /// Returns `Register(X86Register::None)` if the operand isn't a register.
-    fn op_to_reg(&self, index: OperandIndex) -> Register {
-        wrap_x86_reg(self.cur_insn.op_register(index))
+    /// Retrieves a register operand. Returns partial registers as-is without
+    /// any special handling. Panics if the operand isn't a register.
+    fn op_to_raw_reg(&self, index: OperandIndex) -> Register {
+        let reg = self.cur_insn.op_register(index);
+        assert_ne!(reg, X86Register::None);
+        wrap_x86_reg(reg)
+    }
+
+    /// Retrieves a register operand. If it's a partial register, wraps it with
+    /// an `ExtractBits` expression. Panics if the operand isn't a register.
+    fn op_to_reg_expr(&self, out: &mut Output, index: OperandIndex) -> SimpleExpr {
+        let reg = self.cur_insn.op_register(index);
+        assert_ne!(reg, X86Register::None);
+
+        if let Some(PartialRegisterInfo {
+            full_reg,
+            shift,
+            size,
+        }) = get_partial_reg_info(self.decoder.bitness(), reg)
+        {
+            out.expr_to_simple(Expr::ExtractBits {
+                inner: wrap_x86_reg(full_reg).into(),
+                shift,
+                num_bits: size,
+            })
+        } else {
+            wrap_x86_reg(reg).into()
+        }
     }
 
     fn op_to_imm(&self, index: OperandIndex) -> u64 {
@@ -494,7 +512,7 @@ impl<'a> X86Lifter<'a> {
 
     fn op_to_expr(&self, out: &mut Output, index: OperandIndex) -> Expr {
         match self.rough_op_kind(index) {
-            RoughOpKind::Register => SimpleExpr::Variable(self.op_to_reg(index).into()).into(),
+            RoughOpKind::Register => self.op_to_reg_expr(out, index).into(),
             RoughOpKind::Immediate => SimpleExpr::Const(self.op_to_imm(index)).into(),
             RoughOpKind::Memory => {
                 let mem_access = self.memory_access(index);
@@ -693,6 +711,50 @@ impl Output {
         self.next_addr = next_addr;
     }
 
+    /// Add an `Assign` statement. Handles assignments to partial registers.
+    fn push_assign(&mut self, lhs: Variable, rhs: Expr) {
+        if let Variable::Register(reg) = lhs {
+            if let Some(reg) = unwrap_x86_reg(reg) {
+                if let Some(PartialRegisterInfo {
+                    full_reg,
+                    shift,
+                    size,
+                }) = get_partial_reg_info(self.bitness, reg)
+                {
+                    let rhs = self.expr_to_simple(rhs);
+                    self.push(Statement::Assign {
+                        lhs: wrap_x86_reg(full_reg).into(),
+                        rhs: Expr::InsertBits {
+                            lhs: wrap_x86_reg(full_reg).into(),
+                            shift,
+                            num_bits: size,
+                            rhs,
+                        },
+                    });
+                    return;
+                }
+            }
+        }
+
+        self.push(Statement::Assign { lhs, rhs });
+    }
+
+    fn push_assign_lvalue(&mut self, lhs: Lvalue, rhs: SimpleExpr) {
+        match lhs {
+            Lvalue::Variable(var) => {
+                self.push_assign(var, rhs.into());
+            }
+
+            Lvalue::Memory { addr, size_bytes } => {
+                self.push(Statement::Store {
+                    addr,
+                    value: rhs,
+                    size_bytes,
+                });
+            }
+        }
+    }
+
     fn save_expr_in_temp(&mut self, expr: Expr) -> Variable {
         let temp = Variable::new_temp();
         self.push(Statement::Assign {
@@ -862,6 +924,10 @@ pub fn wrap_x86_reg(reg: X86Register) -> Register {
     Register((reg as usize).try_into().unwrap())
 }
 
+fn unwrap_x86_reg(reg: Register) -> Option<X86Register> {
+    X86Register::try_from(usize::from(reg.0)).ok()
+}
+
 /// Only flags that we actually use are included
 #[derive(Clone, Copy, Debug)]
 #[repr(u32)]
@@ -945,23 +1011,6 @@ enum Lvalue {
     Memory { addr: SimpleExpr, size_bytes: u8 },
 }
 
-impl Lvalue {
-    fn make_assign_stmt(self, value: SimpleExpr) -> Statement {
-        match self {
-            Lvalue::Variable(var) => Statement::Assign {
-                lhs: var,
-                rhs: value.into(),
-            },
-
-            Lvalue::Memory { addr, size_bytes } => Statement::Store {
-                addr,
-                value,
-                size_bytes,
-            },
-        }
-    }
-}
-
 #[derive(Clone, Copy)]
 enum ConditionCode {
     O,
@@ -980,4 +1029,38 @@ enum ConditionCode {
     Ge,
     Le,
     G,
+}
+
+struct PartialRegisterInfo {
+    full_reg: X86Register,
+    shift: u8,
+    size: u8,
+}
+
+fn get_partial_reg_info(bitness: u32, reg: X86Register) -> Option<PartialRegisterInfo> {
+    let full_reg = match bitness {
+        16 => {
+            return None;
+        }
+        32 => reg.full_register32(),
+        64 => reg.full_register(),
+        _ => unreachable!(),
+    };
+
+    if full_reg == reg {
+        return None;
+    }
+
+    let shift = match reg {
+        X86Register::AH | X86Register::CH | X86Register::DH | X86Register::BH => 8,
+        _ => 0,
+    };
+
+    let size = reg.size().try_into().unwrap();
+
+    Some(PartialRegisterInfo {
+        full_reg,
+        shift,
+        size,
+    })
 }

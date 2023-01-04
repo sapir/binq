@@ -149,8 +149,10 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
         match ir_expr {
             IrExpr::Unknown
             | IrExpr::Deref { .. }
-            | IrExpr::BinaryOp(_)
-            | IrExpr::InsertBits { .. } => false,
+            | IrExpr::BinaryOp(_) => false,
+
+            // TODO: handle conditions using Insert/ExtractBits
+            IrExpr::InsertBits { .. } | IrExpr::ExtractBits { .. } => false,
 
             IrExpr::Simple(simple)
             // Any extension of a boolean value can also be treated as a boolean
@@ -245,6 +247,15 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
 
             // TODO: the value may change in the process
             IrExpr::Extend(ExtendOp { kind: _, inner }) => Some(inner),
+
+            // TODO: the value may change in the process
+            IrExpr::ExtractBits { inner, shift, .. } => {
+                if *shift == 0 {
+                    Some(inner)
+                } else {
+                    None
+                }
+            }
 
             IrExpr::BinaryOp(BinaryOp { op, lhs, rhs }) => {
                 if lhs == rhs {
