@@ -32,3 +32,6 @@ features = [
     "std",
     "exhaustive_enums",
 ]
+
+[dev-dependencies]
+tempfile = "3.3.0"

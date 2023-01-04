@@ -12,6 +12,9 @@ mod lifting;
 mod query;
 mod utils;
 
+#[cfg(test)]
+mod tests;
+
 use database::StatementAddr;
 use pyo3::{
     exceptions::PyValueError,
@@ -218,17 +221,20 @@ impl PyDatabase {
     }
 
     fn print_il(&mut self) {
-        let mut stmts = self
-            .0
-            .world
-            .query_mut::<(&StatementAddr, &Statement)>()
-            .into_iter()
-            .map(|(_entity, (addr, stmt))| (addr, stmt))
-            .collect::<Vec<_>>();
-        stmts.sort_by_key(|(addr, _stmt)| *addr);
-        for (addr, stmt) in stmts {
-            println!("{addr}: {stmt}");
-        }
+        print_il(&mut self.0);
+    }
+}
+
+fn print_il(database: &mut Database) {
+    let mut stmts = database
+        .world
+        .query_mut::<(&StatementAddr, &Statement)>()
+        .into_iter()
+        .map(|(_entity, (addr, stmt))| (addr, stmt))
+        .collect::<Vec<_>>();
+    stmts.sort_by_key(|(addr, _stmt)| *addr);
+    for (addr, stmt) in stmts {
+        println!("{addr}: {stmt}");
     }
 }
 

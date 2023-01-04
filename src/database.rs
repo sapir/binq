@@ -22,6 +22,15 @@ pub enum Arch {
     X64,
 }
 
+impl Arch {
+    pub fn bitness(self) -> u32 {
+        match self {
+            Arch::X86 => 32,
+            Arch::X64 => 64,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum ArchAndAbi {
     X86,
@@ -72,10 +81,7 @@ impl Database {
     }
 
     fn make_lifter<'a>(&self, addr: Addr64, buf: &'a [u8]) -> X86Lifter<'a> {
-        let bitness = match self.arch_and_abi.arch() {
-            Arch::X86 => 32,
-            Arch::X64 => 64,
-        };
+        let bitness = self.arch_and_abi.arch().bitness();
         X86Lifter::new(bitness, buf, addr)
     }
 
