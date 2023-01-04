@@ -72,7 +72,7 @@ impl<'a> X86Lifter<'a> {
         &mut self,
         mut should_stop_before: impl FnMut(Addr64) -> bool,
     ) -> Result<Vec<(StatementAddr, NextStatementAddr, Statement)>> {
-        let mut out = Output::new(self.cur_addr());
+        let mut out = Output::new(self.decoder.bitness(), self.cur_addr());
 
         loop {
             if should_stop_before(self.cur_addr()) {
@@ -634,13 +634,15 @@ impl RoughOpKind {
 }
 
 struct Output {
+    bitness: u32,
     inner: Vec<(StatementAddr, NextStatementAddr, Statement)>,
     next_addr: StatementAddr,
 }
 
 impl Output {
-    fn new(addr: Addr64) -> Self {
+    fn new(bitness: u32, addr: Addr64) -> Self {
         Self {
+            bitness,
             inner: vec![],
             next_addr: StatementAddr {
                 asm_addr: addr,
@@ -695,9 +697,17 @@ impl Output {
         }
     }
 
+    fn stack_register(&self) -> X86Register {
+        match self.bitness {
+            16 => X86Register::SP,
+            32 => X86Register::ESP,
+            64 => X86Register::RSP,
+            _ => unreachable!(),
+        }
+    }
+
     fn push_to_stack(&mut self, value: SimpleExpr) {
-        // TODO: depends on 32-/64- bit mode
-        let stack_register = X86Register::RSP;
+        let stack_register = self.stack_register();
         let size = stack_register.size();
         let stack_register = wrap_x86_reg(stack_register);
         self.push(Statement::Assign {
@@ -715,8 +725,7 @@ impl Output {
     }
 
     fn pop_from_stack(&mut self) -> SimpleExpr {
-        // TODO: depends on 32-/64- bit mode
-        let stack_register = X86Register::RSP;
+        let stack_register = self.stack_register();
         let size = stack_register.size();
         let stack_register = wrap_x86_reg(stack_register);
         let value = self.expr_to_simple(Expr::Deref(stack_register.into()));
