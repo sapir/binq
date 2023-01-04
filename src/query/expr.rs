@@ -13,7 +13,7 @@ use crate::{
 };
 
 #[derive(Clone, Debug)]
-pub enum Expr {
+pub enum ExprKind {
     Any,
     AnyConst,
     Const(u64),
@@ -21,6 +21,23 @@ pub enum Expr {
     Sum(Vec<Expr>),
     Product(Vec<Expr>),
     Condition(Box<ConditionExpr>),
+}
+
+#[derive(Clone, Debug)]
+pub struct Expr {
+    pub kind: ExprKind,
+    pub name: Option<String>,
+}
+
+impl Expr {
+    pub const fn new(kind: ExprKind) -> Self {
+        Self { kind, name: None }
+    }
+
+    pub fn named(mut self, name: String) -> Self {
+        self.name = Some(name);
+        self
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -39,6 +56,20 @@ impl ConditionExpr {
             rhs: self.lhs.clone(),
         }
     }
+}
+
+#[derive(Clone)]
+pub struct Capture {
+    pub name: String,
+    pub expr: IrExpr,
+    /// Address at which the expression is used, and at which the expression is
+    /// valid
+    pub at: StatementAddr,
+}
+
+pub struct ExprMatch {
+    pub addr: StatementAddr,
+    pub captures: Vec<Capture>,
 }
 
 // TODO: multiple sources are OK as long as they all expand to the same thing
@@ -121,10 +152,10 @@ impl Drop for ExprMatcherAt<'_, '_, '_, '_> {
 
 impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
     fn match_expr(&mut self, pattern_expr: &Expr, ir_expr: &IrExpr) -> bool {
-        match pattern_expr {
-            Expr::Any => true,
+        match &pattern_expr.kind {
+            ExprKind::Any => true,
 
-            Expr::AnyConst | Expr::Const(_) => {
+            ExprKind::AnyConst | ExprKind::Const(_) => {
                 if let Some(inner) = self.get_inner_simple_expr(ir_expr) {
                     self.match_simple_expr(pattern_expr, inner)
                 } else if let Some(partial_x) = self.expand_to_const(ir_expr) {
@@ -141,22 +172,22 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                 }
             }
 
-            Expr::Deref(pat_inner) => match ir_expr {
+            ExprKind::Deref(pat_inner) => match ir_expr {
                 IrExpr::Deref { ptr, size: _ } => self.match_simple_expr(pat_inner, ptr),
 
                 _ => false,
             },
 
-            Expr::Sum(inner_patterns) | Expr::Product(inner_patterns) => {
+            ExprKind::Sum(inner_patterns) | ExprKind::Product(inner_patterns) => {
                 match inner_patterns.as_slice() {
                     [] => false,
 
                     [inner_pattern] => self.match_expr(inner_pattern, ir_expr),
 
                     _ => {
-                        let expected_op = match pattern_expr {
-                            Expr::Sum(_) => BinaryOpKind::Add,
-                            Expr::Product(_) => BinaryOpKind::Mul,
+                        let expected_op = match &pattern_expr.kind {
+                            ExprKind::Sum(_) => BinaryOpKind::Add,
+                            ExprKind::Product(_) => BinaryOpKind::Mul,
                             _ => unreachable!(),
                         };
 
@@ -174,11 +205,12 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                                         v
                                     };
 
-                                    let rhs_pattern = match pattern_expr {
-                                        Expr::Sum(_) => Expr::Sum(rhs_patterns),
-                                        Expr::Product(_) => Expr::Product(rhs_patterns),
+                                    let rhs_pattern = match &pattern_expr.kind {
+                                        ExprKind::Sum(_) => ExprKind::Sum(rhs_patterns),
+                                        ExprKind::Product(_) => ExprKind::Product(rhs_patterns),
                                         _ => unreachable!(),
                                     };
+                                    let rhs_pattern = Expr::new(rhs_pattern);
 
                                     if self.match_simple_expr(&rhs_pattern, rhs) {
                                         return true;
@@ -192,7 +224,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                 }
             }
 
-            Expr::Condition(pat_cond) => self.match_condition_pattern(pat_cond, ir_expr),
+            ExprKind::Condition(pat_cond) => self.match_condition_pattern(pat_cond, ir_expr),
         }
     }
 
@@ -214,7 +246,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                 inner: simple,
             }) => {
                 // TODO: don't clone :(
-                let pattern_expr = Expr::Condition(Box::new(pat_cond.clone()));
+                let pattern_expr = Expr::new(ExprKind::Condition(Box::new(pat_cond.clone())));
                 self.match_simple_expr(&pattern_expr, simple)
             }
 
@@ -234,20 +266,20 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
     }
 
     fn match_simple_expr(&mut self, pattern_expr: &Expr, ir_expr: &SimpleExpr) -> bool {
-        match (pattern_expr, ir_expr) {
-            (Expr::Any, _) => true,
+        match (&pattern_expr.kind, ir_expr) {
+            (ExprKind::Any, _) => true,
 
             (_, SimpleExpr::Variable(ir_var)) => self.match_var(pattern_expr, *ir_var),
 
-            (Expr::AnyConst, SimpleExpr::Const(_)) => true,
+            (ExprKind::AnyConst, SimpleExpr::Const(_)) => true,
 
-            (Expr::Const(pat_x), SimpleExpr::Const(ir_x)) => {
+            (ExprKind::Const(pat_x), SimpleExpr::Const(ir_x)) => {
                 self.match_const_numbers(*pat_x, *ir_x)
             }
 
-            (Expr::Deref(_) | Expr::Condition(_), SimpleExpr::Const(_)) => false,
+            (ExprKind::Deref(_) | ExprKind::Condition(_), SimpleExpr::Const(_)) => false,
 
-            (Expr::Sum(terms), ir_expr @ SimpleExpr::Const(_)) => {
+            (ExprKind::Sum(terms), ir_expr @ SimpleExpr::Const(_)) => {
                 if let [term] = &terms[..] {
                     self.match_simple_expr(term, ir_expr)
                 } else {
@@ -255,7 +287,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                 }
             }
 
-            (Expr::Product(factors), ir_expr @ SimpleExpr::Const(_)) => {
+            (ExprKind::Product(factors), ir_expr @ SimpleExpr::Const(_)) => {
                 if let [factor] = &factors[..] {
                     self.match_simple_expr(factor, ir_expr)
                 } else {
@@ -403,7 +435,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                     | BinaryOpKind::Ror => false,
                 };
 
-                let const_pattern = Expr::Const(identity);
+                let const_pattern = Expr::new(ExprKind::Const(identity));
                 if self.match_simple_expr(&const_pattern, rhs) {
                     return Some(lhs);
                 } else if is_commutative && self.match_simple_expr(&const_pattern, lhs) {
@@ -534,14 +566,15 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
             };
 
             if let Some((kind, offset)) = offset_cmp_kind_and_value {
-                if let Expr::Const(rhs) = pat_cond.rhs {
+                if let ExprKind::Const(rhs) = pat_cond.rhs.kind {
                     // TODO: don't clone :(
                     if match_direct(
                         matcher,
                         &ConditionExpr {
                             kind,
                             lhs: pat_cond.lhs.clone(),
-                            rhs: Expr::Const(rhs.wrapping_add_signed(offset)),
+                            // TODO: what if rhs was named? the name is lost here
+                            rhs: Expr::new(ExprKind::Const(rhs.wrapping_add_signed(offset))),
                         },
                         ir_op,
                     ) {
@@ -551,13 +584,14 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
 
                 // This works for the left-hand side, too: `0xf < x` is the same as
                 // `0x10 <= x`
-                if let Expr::Const(lhs) = pat_cond.lhs {
+                // TODO: what if it's named?
+                if let ExprKind::Const(lhs) = pat_cond.lhs.kind {
                     // TODO: don't clone :(
                     if match_direct(
                         matcher,
                         &ConditionExpr {
                             kind,
-                            lhs: Expr::Const(lhs.wrapping_add_signed(-offset)),
+                            lhs: Expr::new(ExprKind::Const(lhs.wrapping_add_signed(-offset))),
                             rhs: pat_cond.rhs.clone(),
                         },
                         ir_op,
@@ -583,7 +617,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
             rhs: ir_y,
         } = ir_op
         {
-            if self.match_simple_expr(&Expr::AnyConst, ir_y) {
+            if self.match_simple_expr(&Expr::new(ExprKind::AnyConst), ir_y) {
                 // Match `0 les x`
                 if self.match_compare_op(
                     pat_cond,
@@ -920,10 +954,11 @@ pub(super) struct ExprMatcher<'db, 'view, 'query> {
     database: &'db Database,
     view: &'view View<'view, (&'query Statement, &'query ValueSources)>,
     visited_addr_stack: Vec<StatementAddr>,
+    captures: Vec<Capture>,
 }
 
 impl<'db, 'view, 'query> ExprMatcher<'db, 'view, 'query> {
-    pub fn new(
+    fn new(
         database: &'db Database,
         view: &'view View<'view, (&'query Statement, &'query ValueSources)>,
     ) -> Self {
@@ -931,27 +966,42 @@ impl<'db, 'view, 'query> ExprMatcher<'db, 'view, 'query> {
             database,
             view,
             visited_addr_stack: vec![],
+            captures: vec![],
         }
     }
 
     pub fn match_expr(
-        &mut self,
+        database: &'db Database,
+        view: &'view View<'view, (&'query Statement, &'query ValueSources)>,
         addr: StatementAddr,
         value_sources: &ValueSources,
         pattern_expr: &Expr,
         ir_expr: &IrExpr,
-    ) -> bool {
-        ExprMatcherAt::new(addr, value_sources, self).match_expr(pattern_expr, ir_expr)
+    ) -> Option<Vec<Capture>> {
+        let mut matcher = Self::new(database, view);
+        if ExprMatcherAt::new(addr, value_sources, &mut matcher).match_expr(pattern_expr, ir_expr) {
+            Some(matcher.captures)
+        } else {
+            None
+        }
     }
 
     pub fn match_simple_expr(
-        &mut self,
+        database: &'db Database,
+        view: &'view View<'view, (&'query Statement, &'query ValueSources)>,
         addr: StatementAddr,
         value_sources: &ValueSources,
         pattern_expr: &Expr,
         ir_expr: &SimpleExpr,
-    ) -> bool {
-        ExprMatcherAt::new(addr, value_sources, self).match_simple_expr(pattern_expr, ir_expr)
+    ) -> Option<Vec<Capture>> {
+        let mut matcher = Self::new(database, view);
+        if ExprMatcherAt::new(addr, value_sources, &mut matcher)
+            .match_simple_expr(pattern_expr, ir_expr)
+        {
+            Some(matcher.captures)
+        } else {
+            None
+        }
     }
 
     pub fn database(&self) -> &'db Database {

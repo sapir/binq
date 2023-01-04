@@ -1,15 +1,16 @@
 use std::str::FromStr;
 
+use hecs::View;
 use iced_x86::Register as X86Register;
 
 use crate::{
     analysis::data_flow::ValueSources,
-    database::{ArchAndAbi, StatementAddr},
+    database::{ArchAndAbi, Database, StatementAddr},
     ir::{Expr as IrExpr, SimpleExpr, Statement},
     lifting::wrap_x86_reg,
 };
 
-use super::expr::{Expr, ExprMatcher};
+use super::expr::{Capture, Expr, ExprMatcher};
 
 const X64_CALL_REG_ARGS: [X86Register; 6] = [
     X86Register::RDI,
@@ -107,22 +108,25 @@ fn get_field(arch_and_abi: ArchAndAbi, stmt: &Statement, field: Field) -> Option
     }
 }
 
-pub(super) fn match_expr_filter(
-    matcher: &mut ExprMatcher,
+pub(super) fn match_expr_filter<'a>(
+    database: &'a Database,
+    view: &View<(&'a Statement, &'a ValueSources)>,
     addr: StatementAddr,
     stmt: &Statement,
     value_sources: &ValueSources,
     filter: &ExprMatchFilter,
-) -> bool {
+) -> Option<Vec<Capture>> {
     let ExprMatchFilter { field, expr } = filter;
 
-    let Some(ir_expr) = get_field(matcher.database().arch_and_abi, stmt, *field) else { return false };
+    let ir_expr = get_field(database.arch_and_abi, stmt, *field)?;
 
     match ir_expr {
         MaybeSimpleExpr::Simple(ir_expr) => {
-            matcher.match_simple_expr(addr, value_sources, expr, &ir_expr)
+            ExprMatcher::match_simple_expr(database, view, addr, value_sources, expr, &ir_expr)
         }
 
-        MaybeSimpleExpr::Complex(ir_expr) => matcher.match_expr(addr, value_sources, expr, ir_expr),
+        MaybeSimpleExpr::Complex(ir_expr) => {
+            ExprMatcher::match_expr(database, view, addr, value_sources, expr, ir_expr)
+        }
     }
 }

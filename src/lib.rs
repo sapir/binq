@@ -15,18 +15,16 @@ mod utils;
 #[cfg(test)]
 mod tests;
 
-use database::StatementAddr;
 use pyo3::{
     exceptions::PyValueError,
     prelude::*,
     types::{PyDict, PyLong},
 };
-use query::{search, Expr, ExprMatchFilter, Field};
 
 use self::{
-    database::Database,
+    database::{Database, StatementAddr},
     ir::{Addr64, CompareOpKind, Statement},
-    query::ConditionExpr,
+    query::{search, ConditionExpr, Expr, ExprKind, ExprMatch, ExprMatchFilter, Field},
 };
 
 #[pyclass(name = "Expr")]
@@ -35,30 +33,34 @@ struct PyExpr(Expr);
 
 impl PyExpr {
     fn make_cmp(&self, kind: CompareOpKind, other: &Self) -> Self {
-        Self(Expr::Condition(Box::new(ConditionExpr {
+        Self(Expr::new(ExprKind::Condition(Box::new(ConditionExpr {
             kind,
             lhs: self.0.clone(),
             rhs: other.0.clone(),
-        })))
+        }))))
     }
 }
 
 #[pymethods]
 impl PyExpr {
     #[classattr]
-    const ANY: Self = Self(Expr::Any);
+    const ANY: Self = Self(Expr::new(ExprKind::Any));
 
     #[new]
     fn new(obj: &PyAny) -> PyResult<Self> {
         if obj.is_instance_of::<PyLong>()? {
-            Ok(Self(Expr::Const(obj.extract()?)))
+            Ok(Self(Expr::new(ExprKind::Const(obj.extract()?))))
         } else {
             Err(PyValueError::new_err("Bad expression value"))
         }
     }
 
+    fn named(&self, name: String) -> Self {
+        Self(self.0.clone().named(name))
+    }
+
     fn deref(&self) -> Self {
-        Self(Expr::Deref(Box::new(self.0.clone())))
+        Self(Expr::new(ExprKind::Deref(Box::new(self.0.clone()))))
     }
 
     fn eq(&self, other: &Self) -> Self {
@@ -87,70 +89,54 @@ impl PyExpr {
 
     fn __add__(&self, other: &Self) -> Self {
         let mut v = Vec::with_capacity(
-            match &self.0 {
-                Expr::Sum(v) => v.len(),
+            match &self.0.kind {
+                ExprKind::Sum(v) => v.len(),
                 _ => 1,
-            } + match &other.0 {
-                Expr::Sum(v) => v.len(),
+            } + match &other.0.kind {
+                ExprKind::Sum(v) => v.len(),
                 _ => 1,
             },
         );
 
-        match &self.0 {
-            Expr::Sum(v2) => {
-                v.extend_from_slice(v2);
-            }
-
-            other => {
-                v.push(other.clone());
-            }
+        if let ExprKind::Sum(v2) = &self.0.kind {
+            v.extend_from_slice(v2);
+        } else {
+            v.push(self.0.clone());
         }
 
-        match &other.0 {
-            Expr::Sum(v2) => {
-                v.extend_from_slice(v2);
-            }
-
-            other => {
-                v.push(other.clone());
-            }
+        if let ExprKind::Sum(v2) = &other.0.kind {
+            v.extend_from_slice(v2);
+        } else {
+            v.push(other.0.clone());
         }
 
-        Self(Expr::Sum(v))
+        Self(Expr::new(ExprKind::Sum(v)))
     }
 
     fn __mul__(&self, other: &Self) -> Self {
         let mut v = Vec::with_capacity(
-            match &self.0 {
-                Expr::Product(v) => v.len(),
+            match &self.0.kind {
+                ExprKind::Product(v) => v.len(),
                 _ => 1,
-            } + match &other.0 {
-                Expr::Product(v) => v.len(),
+            } + match &other.0.kind {
+                ExprKind::Product(v) => v.len(),
                 _ => 1,
             },
         );
 
-        match &self.0 {
-            Expr::Product(v2) => {
-                v.extend_from_slice(v2);
-            }
-
-            other => {
-                v.push(other.clone());
-            }
+        if let ExprKind::Product(v2) = &self.0.kind {
+            v.extend_from_slice(v2);
+        } else {
+            v.push(self.0.clone());
         }
 
-        match &other.0 {
-            Expr::Product(v2) => {
-                v.extend_from_slice(v2);
-            }
-
-            other => {
-                v.push(other.clone());
-            }
+        if let ExprKind::Product(v2) = &other.0.kind {
+            v.extend_from_slice(v2);
+        } else {
+            v.push(other.0.clone());
         }
 
-        Self(Expr::Product(v))
+        Self(Expr::new(ExprKind::Product(v)))
     }
 }
 
@@ -216,7 +202,12 @@ impl PyDatabase {
 
         Ok(search(&mut self.0, &filters)
             .into_iter()
-            .map(|StatementAddr { asm_addr, ir_index }| (asm_addr, ir_index))
+            .map(
+                |ExprMatch {
+                     addr: StatementAddr { asm_addr, ir_index },
+                     ..
+                 }| (asm_addr, ir_index),
+            )
             .collect())
     }
 
