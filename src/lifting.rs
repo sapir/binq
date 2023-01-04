@@ -183,30 +183,10 @@ impl<'a> X86Lifter<'a> {
                     }
                 };
 
-                let lhs: SimpleExpr;
-                let lvalue: Lvalue;
-                match self.rough_op_kind(0) {
-                    RoughOpKind::Register => {
-                        let lhs_var = Variable::Register(self.op_to_raw_reg(0));
-                        lhs = SimpleExpr::Variable(lhs_var);
-                        lvalue = Lvalue::Variable(lhs_var);
-                    }
+                let lvalue = self.op_to_lvalue(out, 0);
 
-                    RoughOpKind::Immediate => unreachable!(),
-
-                    RoughOpKind::Memory => {
-                        let mem_access = self.memory_access(0);
-                        let lhs_addr = mem_access.to_addr_simple_expr(out);
-                        lhs = out.expr_to_simple(Expr::Deref {
-                            ptr: lhs_addr,
-                            size_bytes: mem_access.size,
-                        });
-                        lvalue = Lvalue::Memory {
-                            addr: lhs_addr,
-                            size_bytes: mem_access.size,
-                        };
-                    }
-                }
+                let lhs = self.op_to_expr(out, 0);
+                let lhs = out.expr_to_simple(lhs);
 
                 let value = match mnemonic {
                     Adc => {
@@ -332,7 +312,7 @@ impl<'a> X86Lifter<'a> {
             // setp and setnp aren't implemented
             Seto | Setno | Setb | Setae | Sete | Setne | Setbe | Seta | Sets | Setns | Setl
             | Setge | Setle | Setg => {
-                let lhs = self.op_to_raw_reg(0);
+                let lhs = self.op_to_lvalue(out, 0);
 
                 let value = match mnemonic {
                     Seto => out.cc_expr(ConditionCode::O),
@@ -351,8 +331,9 @@ impl<'a> X86Lifter<'a> {
                     Setg => out.cc_expr(ConditionCode::G),
                     _ => unreachable!(),
                 };
+                let value = out.expr_to_simple(value);
 
-                out.push_assign(lhs.into(), value);
+                out.push_assign_lvalue(lhs, value);
             }
 
             Call => {
@@ -445,7 +426,12 @@ impl<'a> X86Lifter<'a> {
     /// any special handling. Panics if the operand isn't a register.
     fn op_to_raw_reg(&self, index: OperandIndex) -> Register {
         let reg = self.cur_insn.op_register(index);
-        assert_ne!(reg, X86Register::None);
+        assert_ne!(
+            reg,
+            X86Register::None,
+            "tried to lift operand {index} as a register in {}",
+            self.cur_insn,
+        );
         wrap_x86_reg(reg)
     }
 
@@ -518,6 +504,25 @@ impl<'a> X86Lifter<'a> {
                 let mem_access = self.memory_access(index);
                 Expr::Deref {
                     ptr: mem_access.to_addr_simple_expr(out),
+                    size_bytes: mem_access.size,
+                }
+            }
+        }
+    }
+
+    /// Returns the operand as an `Lvalue`
+    fn op_to_lvalue(&self, out: &mut Output, index: OperandIndex) -> Lvalue {
+        match self.rough_op_kind(index) {
+            RoughOpKind::Register => {
+                Lvalue::Variable(Variable::Register(self.op_to_raw_reg(index)))
+            }
+
+            RoughOpKind::Immediate => unreachable!(),
+
+            RoughOpKind::Memory => {
+                let mem_access = self.memory_access(index);
+                Lvalue::Memory {
+                    addr: mem_access.to_addr_simple_expr(out),
                     size_bytes: mem_access.size,
                 }
             }
