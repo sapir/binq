@@ -1,22 +1,11 @@
 import sys
 
-import cle
-
-import binq
 from binq import Expr as E
-from binq.cle import lift_object
+from binq.cle import load
 
 
 if __name__ == "__main__":
-    db = binq.Database("x64")
-    filename = sys.argv[1]
-    print("loading", filename)
-    bin = cle.Loader(filename)
-    print("lifting")
-    lift_object(db, bin.main_object)
-    print("analyzing")
-    db.analyze()
-    print("done analyzing!")
+    db = load("x64", sys.argv[1])
 
     query = {"value": E.ANY + E(0x10)}
     for asm_addr, il_index in db.search(query):

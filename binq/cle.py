@@ -3,6 +3,8 @@ from pathlib import Path
 import cle
 from tqdm import tqdm
 
+from . import Database
+
 
 def lift_object(db, object: cle.Backend):
     buf = Path(object.binary).read_bytes()
@@ -26,3 +28,14 @@ def lift_object(db, object: cle.Backend):
         section = object.find_section_containing(addr)
         section_buf = buf[section.offset : section.offset + section.filesize]
         db.add_func(section.vaddr, section_buf, addr)
+
+def load(arch_and_abi, filename):
+    db = Database(arch_and_abi)
+    print("loading", filename)
+    bin = cle.Loader(filename)
+    print("lifting")
+    lift_object(db, bin.main_object)
+    print("analyzing")
+    db.analyze()
+    print("done analyzing!")
+    return db
