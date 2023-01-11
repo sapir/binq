@@ -393,6 +393,7 @@ pub enum Statement {
     Store {
         addr: SimpleExpr,
         value: SimpleExpr,
+        size_bytes: u8,
     },
 
     Call {
@@ -415,7 +416,14 @@ impl Display for Statement {
         match self {
             Statement::Nop => write!(f, "nop"),
             Statement::Assign { lhs, rhs } => write!(f, "{lhs} = {rhs}"),
-            Statement::Store { addr, value } => write!(f, "*{addr} = {value}"),
+            Statement::Store {
+                addr,
+                value,
+                size_bytes,
+            } => {
+                let size_bits = size_bytes * 8;
+                write!(f, "*(u{size_bits}*){addr} = {value}")
+            }
             Statement::Call { target } => write!(f, "call {target}"),
             Statement::Jump {
                 target,

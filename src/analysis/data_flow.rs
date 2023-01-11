@@ -145,9 +145,11 @@ fn uses_var(stmt: &Statement, var: Variable) -> bool {
     match stmt {
         Statement::Nop | Statement::ClearTemps => false,
         Statement::Assign { lhs: _, rhs } => expr_uses_var(rhs, var),
-        Statement::Store { addr, value } => {
-            simple_expr_is_var(addr, var) || simple_expr_is_var(value, var)
-        }
+        Statement::Store {
+            addr,
+            value,
+            size_bytes: _,
+        } => simple_expr_is_var(addr, var) || simple_expr_is_var(value, var),
         Statement::Call { target } => {
             // Registers can be used as arguments, but don't bother checking the
             // ABI, instead just track all registers for calls.

@@ -149,8 +149,13 @@ impl<'a> X86Lifter<'a> {
 
                     RoughOpKind::Memory => {
                         let rhs = out.expr_to_simple(rhs);
-                        let addr = self.memory_access(0).to_addr_simple_expr(out);
-                        out.push(Statement::Store { addr, value: rhs });
+                        let mem_access = self.memory_access(0);
+                        let addr = mem_access.to_addr_simple_expr(out);
+                        out.push(Statement::Store {
+                            addr,
+                            value: rhs,
+                            size_bytes: mem_access.size,
+                        });
                     }
                 }
             }
@@ -194,7 +199,10 @@ impl<'a> X86Lifter<'a> {
                             ptr: lhs_addr,
                             size_bytes: mem_access.size,
                         });
-                        lvalue = Lvalue::Memory { addr: lhs_addr };
+                        lvalue = Lvalue::Memory {
+                            addr: lhs_addr,
+                            size_bytes: mem_access.size,
+                        };
                     }
                 }
 
@@ -728,6 +736,7 @@ impl Output {
         self.push(Statement::Store {
             addr: stack_register.into(),
             value,
+            size_bytes: size.try_into().unwrap(),
         });
     }
 
@@ -933,7 +942,7 @@ fn iter_rflags_bits(value: u32) -> impl Iterator<Item = Rflag> {
 #[derive(Clone, Copy)]
 enum Lvalue {
     Variable(Variable),
-    Memory { addr: SimpleExpr },
+    Memory { addr: SimpleExpr, size_bytes: u8 },
 }
 
 impl Lvalue {
@@ -944,7 +953,11 @@ impl Lvalue {
                 rhs: value.into(),
             },
 
-            Lvalue::Memory { addr } => Statement::Store { addr, value },
+            Lvalue::Memory { addr, size_bytes } => Statement::Store {
+                addr,
+                value,
+                size_bytes,
+            },
         }
     }
 }
