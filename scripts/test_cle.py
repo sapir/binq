@@ -14,7 +14,9 @@ if __name__ == "__main__":
     bin = cle.Loader(filename)
     print("lifting")
     lift_object(db, bin.main_object)
+    print("analyzing")
     db.analyze()
+    print("done analyzing!")
 
     query = {"value": E.ANY + E(0x10)}
     for asm_addr, il_index in db.search(query):
