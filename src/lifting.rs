@@ -170,7 +170,7 @@ impl<'a> X86Lifter<'a> {
 
                 let addr_size_bits = self.decoder.bitness();
                 let lhs_size = self.op_size(0);
-                let change_width_kind = match u32::from(lhs_size.bits()).cmp(&addr_size_bits) {
+                let change_width_kind = match lhs_size.bits().cmp(&addr_size_bits) {
                     Ordering::Less => Some(ChangeWidthKind::Truncate),
                     Ordering::Equal => None,
                     Ordering::Greater => Some(ChangeWidthKind::ZeroExtend),
@@ -936,7 +936,7 @@ struct MemoryAccess {
     index: X86Register,
     index_scale: u32,
     displacement: Const,
-    size: u8,
+    size: u32,
 }
 
 impl MemoryAccess {
@@ -1092,7 +1092,7 @@ enum ConditionCode {
 
 struct PartialRegisterInfo {
     full_reg: X86Register,
-    shift: u8,
+    shift: u32,
     size: SizeBytes,
 }
 

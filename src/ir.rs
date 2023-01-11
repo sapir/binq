@@ -10,10 +10,10 @@ pub type Addr64 = u64;
 pub type Const = u64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct SizeBits(pub u8);
+pub struct SizeBits(pub u32);
 
 impl SizeBits {
-    pub fn bits(self) -> u8 {
+    pub fn bits(self) -> u32 {
         self.0
     }
 }
@@ -25,10 +25,10 @@ impl From<SizeBytes> for SizeBits {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct SizeBytes(pub u8);
+pub struct SizeBytes(pub u32);
 
 impl SizeBytes {
-    pub fn bits(self) -> u8 {
+    pub fn bits(self) -> u32 {
         SizeBits::from(self).bits()
     }
 }
@@ -390,15 +390,15 @@ pub enum Expr {
     /// (which is also shifted left by `shift`).
     InsertBits {
         lhs: SimpleExpr,
-        shift: u8,
-        num_bits: u8,
+        shift: u32,
+        num_bits: u32,
         rhs: SimpleExpr,
     },
     /// Get `num_bits` bits from `inner`, starting at bit number `shift`.
     ExtractBits {
         inner: SimpleExpr,
-        shift: u8,
-        num_bits: u8,
+        shift: u32,
+        num_bits: u32,
     },
     X86Flag(X86FlagResult),
     ComplexX86ConditionCode(ComplexX86ConditionCode),
