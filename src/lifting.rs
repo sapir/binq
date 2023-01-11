@@ -143,7 +143,7 @@ impl<'a> X86Lifter<'a> {
 
                 match self.rough_op_kind(0) {
                     RoughOpKind::Register => {
-                        let lhs = self.op_to_raw_reg(0).into();
+                        let lhs = self.op_to_reg(0).into();
                         out.push_assign(lhs, rhs);
                     }
 
@@ -166,7 +166,7 @@ impl<'a> X86Lifter<'a> {
             Lea => {
                 let addr_simple_expr = self.memory_access(1).to_addr_simple_expr(out);
 
-                let lhs = self.op_to_raw_reg(0).into();
+                let lhs = self.op_to_reg(0).into();
 
                 let addr_size_bits = self.decoder.bitness();
                 let lhs_size = self.op_size(0);
@@ -300,7 +300,7 @@ impl<'a> X86Lifter<'a> {
             }
 
             Pop => {
-                let lhs = self.op_to_raw_reg(0);
+                let lhs = self.op_to_reg(0);
                 let rhs = out.pop_from_stack();
                 out.push_assign(lhs.into(), rhs.into());
             }
@@ -452,9 +452,8 @@ impl<'a> X86Lifter<'a> {
         RoughOpKind::of(self.op_kind(index))
     }
 
-    /// Retrieves a register operand. Returns partial registers as-is without
-    /// any special handling. Panics if the operand isn't a register.
-    fn op_to_raw_reg(&self, index: OperandIndex) -> Register {
+    /// Retrieves a register operand. Panics if the operand isn't a register.
+    fn op_to_reg(&self, index: OperandIndex) -> Register {
         let reg = self.cur_insn.op_register(index);
         assert_ne!(
             reg,
@@ -463,28 +462,6 @@ impl<'a> X86Lifter<'a> {
             self.cur_insn,
         );
         wrap_x86_reg(reg)
-    }
-
-    /// Retrieves a register operand. If it's a partial register, wraps it with
-    /// an `ExtractBits` expression. Panics if the operand isn't a register.
-    fn op_to_reg_expr(&self, out: &mut Output, index: OperandIndex) -> SimpleExpr {
-        let reg = self.cur_insn.op_register(index);
-        assert_ne!(reg, X86Register::None);
-
-        if let Some(PartialRegisterInfo {
-            full_reg,
-            shift,
-            size,
-        }) = get_partial_reg_info(self.decoder.bitness(), reg)
-        {
-            out.expr_to_simple(Expr::ExtractBits {
-                inner: wrap_x86_reg(full_reg).into(),
-                shift,
-                num_bits: size.bits(),
-            })
-        } else {
-            wrap_x86_reg(reg).into()
-        }
     }
 
     fn op_to_imm(&self, index: OperandIndex) -> u64 {
@@ -528,7 +505,7 @@ impl<'a> X86Lifter<'a> {
 
     fn op_to_expr(&self, out: &mut Output, index: OperandIndex) -> Expr {
         match self.rough_op_kind(index) {
-            RoughOpKind::Register => self.op_to_reg_expr(out, index).into(),
+            RoughOpKind::Register => self.op_to_reg(index).into(),
             RoughOpKind::Immediate => SimpleExpr::Const(self.op_to_imm(index)).into(),
             RoughOpKind::Memory => {
                 let mem_access = self.memory_access(index);
@@ -543,9 +520,7 @@ impl<'a> X86Lifter<'a> {
     /// Returns the operand as an `Lvalue`
     fn op_to_lvalue(&self, out: &mut Output, index: OperandIndex) -> Lvalue {
         match self.rough_op_kind(index) {
-            RoughOpKind::Register => {
-                Lvalue::Variable(Variable::Register(self.op_to_raw_reg(index)))
-            }
+            RoughOpKind::Register => Lvalue::Variable(Variable::Register(self.op_to_reg(index))),
 
             RoughOpKind::Immediate => unreachable!(),
 
@@ -780,32 +755,43 @@ impl Output {
         self.next_addr = next_addr;
     }
 
-    /// Add an `Assign` statement. Handles assignments to partial registers.
+    /// Add an `Assign` statement. Updates linked partial/full registers, too.
     fn push_assign(&mut self, lhs: Variable, rhs: Expr) {
+        self.push(Statement::Assign { lhs, rhs });
+
         if let Variable::Register(reg) = lhs {
             if let Some(reg) = unwrap_x86_reg(reg) {
-                if let Some(PartialRegisterInfo {
-                    full_reg,
-                    shift,
-                    size,
-                }) = get_partial_reg_info(self.bitness, reg)
-                {
-                    let rhs = self.expr_to_simple(rhs);
+                for &partial_reg in get_partial_regs(reg) {
+                    self.push(Statement::Assign {
+                        lhs: wrap_x86_reg(partial_reg).into(),
+                        rhs: Expr::ExtractBits {
+                            inner: lhs.into(),
+                            shift: get_partial_reg_shift(partial_reg),
+                            num_bits: get_x86_register_size(partial_reg).bits(),
+                        },
+                    });
+                }
+
+                for &full_reg in get_full_regs(reg) {
+                    if self.bitness < 32 && full_reg.is_gpr32() {
+                        continue;
+                    }
+                    if self.bitness < 64 && full_reg.is_gpr64() {
+                        continue;
+                    }
+
                     self.push(Statement::Assign {
                         lhs: wrap_x86_reg(full_reg).into(),
                         rhs: Expr::InsertBits {
                             lhs: wrap_x86_reg(full_reg).into(),
-                            shift,
-                            num_bits: size.bits(),
-                            rhs,
+                            shift: get_partial_reg_shift(reg),
+                            num_bits: get_x86_register_size(reg).bits(),
+                            rhs: lhs.into(),
                         },
                     });
-                    return;
                 }
             }
         }
-
-        self.push(Statement::Assign { lhs, rhs });
     }
 
     fn push_assign_lvalue(&mut self, lhs: Lvalue, rhs: SimpleExpr) {
@@ -1100,40 +1086,102 @@ enum ConditionCode {
     G,
 }
 
-struct PartialRegisterInfo {
-    full_reg: X86Register,
-    shift: u32,
-    size: SizeBytes,
-}
+fn get_partial_regs(reg: X86Register) -> &'static [X86Register] {
+    use X86Register::*;
 
-fn get_partial_reg_info(bitness: u32, reg: X86Register) -> Option<PartialRegisterInfo> {
-    let full_reg = match bitness {
-        16 => {
-            return None;
-        }
-        32 => reg.full_register32(),
-        64 => reg.full_register(),
-        _ => unreachable!(),
-    };
+    macro_rules! match_regs {
+        (
+            $reg:expr,
+            $(($qword_reg:path, $dword_reg:path, $word_reg:path, $lo_reg:path $(, $hi_reg:path)?),)+
+        ) => {
+            match reg {
+                $(
+                    $word_reg => &[$lo_reg $(, $hi_reg)?],
+                    $dword_reg => &[$lo_reg $(, $hi_reg)? , $word_reg],
+                    $qword_reg => &[$lo_reg $(, $hi_reg)? , $word_reg, $dword_reg],
+                )+
 
-    if full_reg == reg {
-        return None;
+                _ => &[],
+            }
+        };
     }
 
-    let shift = match reg {
-        X86Register::AH | X86Register::CH | X86Register::DH | X86Register::BH => 8,
-        _ => 0,
-    };
+    match_regs!(
+        reg,
+        (RAX, EAX, AX, AL, AH),
+        (RCX, ECX, CX, CL, CH),
+        (RDX, EDX, DX, DL, DH),
+        (RBX, EBX, BX, BL, BH),
+        (RSP, ESP, SP, SPL),
+        (RBP, EBP, BP, BPL),
+        (RSI, ESI, SI, SIL),
+        (RDI, EDI, DI, DIL),
+        (R8, R8D, R8W, R8L),
+        (R9, R9D, R9W, R9L),
+        (R10, R10D, R10W, R10L),
+        (R11, R11D, R11W, R11L),
+        (R12, R12D, R12W, R12L),
+        (R13, R13D, R13W, R13L),
+        (R14, R14D, R14W, R14L),
+        (R15, R15D, R15W, R15L),
+    )
+}
 
-    let size = get_x86_register_size(reg);
+fn get_full_regs(reg: X86Register) -> &'static [X86Register] {
+    use X86Register::*;
 
-    Some(PartialRegisterInfo {
-        full_reg,
-        shift,
-        size,
-    })
+    macro_rules! match_regs {
+        (
+            $reg:expr,
+            $(($qword_reg:path, $dword_reg:path, $word_reg:path, $lo_reg:path $(, $hi_reg:path)?),)+
+        ) => {
+            match reg {
+                $(
+                    $dword_reg => &[$qword_reg],
+                    $word_reg => &[$qword_reg, $dword_reg],
+                    $lo_reg $(| $hi_reg)? => &[$qword_reg, $dword_reg, $word_reg],
+                )+
+
+                _ => &[],
+            }
+        };
+    }
+
+    match_regs!(
+        reg,
+        (RAX, EAX, AX, AL, AH),
+        (RCX, ECX, CX, CL, CH),
+        (RDX, EDX, DX, DL, DH),
+        (RBX, EBX, BX, BL, BH),
+        (RSP, ESP, SP, SPL),
+        (RBP, EBP, BP, BPL),
+        (RSI, ESI, SI, SIL),
+        (RDI, EDI, DI, DIL),
+        (R8, R8D, R8W, R8L),
+        (R9, R9D, R9W, R9L),
+        (R10, R10D, R10W, R10L),
+        (R11, R11D, R11W, R11L),
+        (R12, R12D, R12W, R12L),
+        (R13, R13D, R13W, R13L),
+        (R14, R14D, R14W, R14L),
+        (R15, R15D, R15W, R15L),
+    )
 }
 
 pub fn get_x86_register_size(x86_reg: X86Register) -> SizeBytes {
     SizeBytes(x86_reg.size().try_into().unwrap())
+}
+
+fn is_high_byte_reg(x86_reg: X86Register) -> bool {
+    use X86Register::*;
+
+    matches!(x86_reg, AH | BH | CH | DH)
+}
+
+fn get_partial_reg_shift(x86_reg: X86Register) -> u32 {
+    if is_high_byte_reg(x86_reg) {
+        8
+    } else {
+        0
+    }
 }
