@@ -10,8 +10,8 @@ use crate::{
     database::{NextStatementAddr, StatementAddr},
     ir::{
         Addr64, BinaryOp, BinaryOpKind, ChangeWidthKind, ChangeWidthOp, CompareOp, CompareOpKind,
-        ComplexX86ConditionCode, Const, Expr, Register, SimpleExpr, Statement, Temp, UnaryOp,
-        UnaryOpKind, Variable, X86Flag, X86FlagResult,
+        ComplexX86ConditionCode, Const, Expr, Register, SimpleExpr, SizeBytes, Statement, Temp,
+        UnaryOp, UnaryOpKind, Variable, X86Flag, X86FlagResult,
     },
 };
 
@@ -136,7 +136,7 @@ impl<'a> X86Lifter<'a> {
                 if let Some(extend_kind) = extend_kind {
                     rhs = Expr::ChangeWidth(ChangeWidthOp {
                         kind: extend_kind,
-                        new_size_bits: self.op_size_bits(0),
+                        new_size: self.op_size(0).into(),
                         inner: out.expr_to_simple(rhs),
                     });
                 }
@@ -157,7 +157,7 @@ impl<'a> X86Lifter<'a> {
                         out.push(Statement::Store {
                             addr,
                             value: rhs,
-                            size_bytes: mem_access.size,
+                            size: SizeBytes(mem_access.size),
                         });
                     }
                 }
@@ -168,9 +168,9 @@ impl<'a> X86Lifter<'a> {
 
                 let lhs = self.op_to_raw_reg(0).into();
 
-                let addr_size = self.decoder.bitness();
-                let lhs_size_bits = self.op_size_bits(0);
-                let change_width_kind = match u32::from(lhs_size_bits).cmp(&addr_size) {
+                let addr_size_bits = self.decoder.bitness();
+                let lhs_size = self.op_size(0);
+                let change_width_kind = match u32::from(lhs_size.bits()).cmp(&addr_size_bits) {
                     Ordering::Less => Some(ChangeWidthKind::Truncate),
                     Ordering::Equal => None,
                     Ordering::Greater => Some(ChangeWidthKind::ZeroExtend),
@@ -178,7 +178,7 @@ impl<'a> X86Lifter<'a> {
                 let rhs = if let Some(kind) = change_width_kind {
                     Expr::ChangeWidth(ChangeWidthOp {
                         kind,
-                        new_size_bits: lhs_size_bits,
+                        new_size: lhs_size.into(),
                         inner: addr_simple_expr,
                     })
                 } else {
@@ -470,7 +470,7 @@ impl<'a> X86Lifter<'a> {
             out.expr_to_simple(Expr::ExtractBits {
                 inner: wrap_x86_reg(full_reg).into(),
                 shift,
-                num_bits: size,
+                num_bits: size.bits(),
             })
         } else {
             wrap_x86_reg(reg).into()
@@ -524,7 +524,7 @@ impl<'a> X86Lifter<'a> {
                 let mem_access = self.memory_access(index);
                 Expr::Deref {
                     ptr: mem_access.to_addr_simple_expr(out),
-                    size_bytes: mem_access.size,
+                    size: SizeBytes(mem_access.size),
                 }
             }
         }
@@ -543,7 +543,7 @@ impl<'a> X86Lifter<'a> {
                 let mem_access = self.memory_access(index);
                 Lvalue::Memory {
                     addr: mem_access.to_addr_simple_expr(out),
-                    size_bytes: mem_access.size,
+                    size: SizeBytes(mem_access.size),
                 }
             }
         }
@@ -649,26 +649,26 @@ impl<'a> X86Lifter<'a> {
         }
     }
 
-    fn op_size_bits(&self, index: u32) -> u8 {
+    fn op_size(&self, index: u32) -> SizeBytes {
         match self.cur_insn.op_kind(index) {
-            OpKind::Register => self.cur_insn.op_register(index).size().try_into().unwrap(),
+            OpKind::Register => get_x86_register_size(self.cur_insn.op_register(index)),
 
-            OpKind::Immediate8 | OpKind::Immediate8_2nd => 8,
+            OpKind::Immediate8 | OpKind::Immediate8_2nd => SizeBytes(1),
 
             OpKind::NearBranch16
             | OpKind::FarBranch16
             | OpKind::Immediate16
-            | OpKind::Immediate8to16 => 16,
+            | OpKind::Immediate8to16 => SizeBytes(2),
 
             OpKind::NearBranch32
             | OpKind::FarBranch32
             | OpKind::Immediate32
-            | OpKind::Immediate8to32 => 32,
+            | OpKind::Immediate8to32 => SizeBytes(4),
 
             OpKind::NearBranch64
             | OpKind::Immediate64
             | OpKind::Immediate8to64
-            | OpKind::Immediate32to64 => 64,
+            | OpKind::Immediate32to64 => SizeBytes(8),
 
             OpKind::MemorySegSI
             | OpKind::MemorySegESI
@@ -679,7 +679,7 @@ impl<'a> X86Lifter<'a> {
             | OpKind::MemoryESDI
             | OpKind::MemoryESEDI
             | OpKind::MemoryESRDI
-            | OpKind::Memory => self.cur_insn.memory_size().size().try_into().unwrap(),
+            | OpKind::Memory => SizeBytes(self.cur_insn.memory_size().size().try_into().unwrap()),
         }
     }
 }
@@ -786,7 +786,7 @@ impl Output {
                         rhs: Expr::InsertBits {
                             lhs: wrap_x86_reg(full_reg).into(),
                             shift,
-                            num_bits: size,
+                            num_bits: size.bits(),
                             rhs,
                         },
                     });
@@ -804,11 +804,11 @@ impl Output {
                 self.push_assign(var, rhs.into());
             }
 
-            Lvalue::Memory { addr, size_bytes } => {
+            Lvalue::Memory { addr, size } => {
                 self.push(Statement::Store {
                     addr,
                     value: rhs,
-                    size_bytes,
+                    size,
                 });
             }
         }
@@ -844,30 +844,30 @@ impl Output {
 
     fn push_to_stack(&mut self, value: SimpleExpr) {
         let stack_register = self.stack_register();
-        let size = stack_register.size();
+        let size_bytes = get_x86_register_size(stack_register);
         let stack_register = wrap_x86_reg(stack_register);
         self.push(Statement::Assign {
             lhs: stack_register.into(),
             rhs: Expr::BinaryOp(BinaryOp {
                 op: BinaryOpKind::Sub,
                 lhs: stack_register.into(),
-                rhs: SimpleExpr::Const(size.try_into().unwrap()),
+                rhs: SimpleExpr::Const(size_bytes.0.try_into().unwrap()),
             }),
         });
         self.push(Statement::Store {
             addr: stack_register.into(),
             value,
-            size_bytes: size.try_into().unwrap(),
+            size: size_bytes,
         });
     }
 
     fn pop_from_stack(&mut self) -> SimpleExpr {
         let stack_register = self.stack_register();
-        let size = stack_register.size();
+        let size_bytes = get_x86_register_size(stack_register);
         let stack_register = wrap_x86_reg(stack_register);
         let value = self.expr_to_simple(Expr::Deref {
             ptr: stack_register.into(),
-            size_bytes: size.try_into().unwrap(),
+            size: size_bytes,
         });
 
         self.push(Statement::Assign {
@@ -875,7 +875,7 @@ impl Output {
             rhs: Expr::BinaryOp(BinaryOp {
                 op: BinaryOpKind::Add,
                 lhs: stack_register.into(),
-                rhs: SimpleExpr::Const(size.try_into().unwrap()),
+                rhs: SimpleExpr::Const(size_bytes.0.try_into().unwrap()),
             }),
         });
 
@@ -1067,7 +1067,7 @@ fn iter_rflags_bits(value: u32) -> impl Iterator<Item = Rflag> {
 #[derive(Clone, Copy)]
 enum Lvalue {
     Variable(Variable),
-    Memory { addr: SimpleExpr, size_bytes: u8 },
+    Memory { addr: SimpleExpr, size: SizeBytes },
 }
 
 #[derive(Clone, Copy)]
@@ -1093,7 +1093,7 @@ enum ConditionCode {
 struct PartialRegisterInfo {
     full_reg: X86Register,
     shift: u8,
-    size: u8,
+    size: SizeBytes,
 }
 
 fn get_partial_reg_info(bitness: u32, reg: X86Register) -> Option<PartialRegisterInfo> {
@@ -1115,11 +1115,15 @@ fn get_partial_reg_info(bitness: u32, reg: X86Register) -> Option<PartialRegiste
         _ => 0,
     };
 
-    let size = reg.size().try_into().unwrap();
+    let size = get_x86_register_size(reg);
 
     Some(PartialRegisterInfo {
         full_reg,
         shift,
         size,
     })
+}
+
+pub fn get_x86_register_size(x86_reg: X86Register) -> SizeBytes {
+    SizeBytes(x86_reg.size().try_into().unwrap())
 }

@@ -148,7 +148,7 @@ fn uses_var(stmt: &Statement, var: Variable) -> bool {
         Statement::Store {
             addr,
             value,
-            size_bytes: _,
+            size: _,
         } => simple_expr_is_var(addr, var) || simple_expr_is_var(value, var),
         Statement::Call { target } => {
             // Registers can be used as arguments, but don't bother checking the
@@ -178,13 +178,10 @@ fn expr_uses_var(expr: &Expr, var: Variable) -> bool {
         Expr::Simple(x)
         | Expr::ChangeWidth(ChangeWidthOp {
             kind: _,
-            new_size_bits: _,
+            new_size: _,
             inner: x,
         })
-        | Expr::Deref {
-            ptr: x,
-            size_bytes: _,
-        }
+        | Expr::Deref { ptr: x, size: _ }
         | Expr::UnaryOp(UnaryOp { op: _, value: x })
         | Expr::ExtractBits {
             inner: x,

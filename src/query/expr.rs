@@ -92,7 +92,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
             }
 
             Expr::Deref(pat_inner) => match ir_expr {
-                IrExpr::Deref { ptr, size_bytes: _ } => self.match_simple_expr(pat_inner, ptr),
+                IrExpr::Deref { ptr, size: _ } => self.match_simple_expr(pat_inner, ptr),
 
                 _ => false,
             },
@@ -160,7 +160,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
             // value, so just ignore the extension part.
             | IrExpr::ChangeWidth(ChangeWidthOp {
                 kind: _,
-                new_size_bits: _,
+                new_size: _,
                 inner: simple,
             }) => {
                 // TODO: don't clone :(
@@ -250,7 +250,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
             // TODO: the value may change in the process
             IrExpr::ChangeWidth(ChangeWidthOp {
                 kind: _,
-                new_size_bits: _,
+                new_size: _,
                 inner,
             }) => Some(inner),
 

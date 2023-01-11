@@ -9,6 +9,42 @@ pub type Addr64 = u64;
 
 pub type Const = u64;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SizeBits(pub u8);
+
+impl SizeBits {
+    pub fn bits(self) -> u8 {
+        self.0
+    }
+}
+
+impl From<SizeBytes> for SizeBits {
+    fn from(value: SizeBytes) -> Self {
+        Self(value.0 * 8)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SizeBytes(pub u8);
+
+impl SizeBytes {
+    pub fn bits(self) -> u8 {
+        SizeBits::from(self).bits()
+    }
+}
+
+impl TryFrom<SizeBits> for SizeBytes {
+    type Error = ();
+
+    fn try_from(value: SizeBits) -> Result<Self, Self::Error> {
+        if value.0 % 8 == 0 {
+            Ok(Self(value.0 / 8))
+        } else {
+            Err(())
+        }
+    }
+}
+
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -132,7 +168,7 @@ pub enum ChangeWidthKind {
 #[derive(Clone, Debug)]
 pub struct ChangeWidthOp {
     pub kind: ChangeWidthKind,
-    pub new_size_bits: u8,
+    pub new_size: SizeBits,
     /// This is expected to always be a `SimpleExpr::Variable`. We could use a
     /// `Variable` here instead of a `SimpleExpr` but it's easier for code
     /// handling it if it's a `SimpleExpr` like everything else.
@@ -149,7 +185,7 @@ impl Display for ChangeWidthOp {
                 ChangeWidthKind::ZeroExtend => "zero_extend",
                 ChangeWidthKind::SignExtend => "sign_extend",
             },
-            self.new_size_bits,
+            self.new_size.bits(),
             self.inner
         )
     }
@@ -345,7 +381,7 @@ pub enum Expr {
     ChangeWidth(ChangeWidthOp),
     Deref {
         ptr: SimpleExpr,
-        size_bytes: u8,
+        size: SizeBytes,
     },
     UnaryOp(UnaryOp),
     BinaryOp(BinaryOp),
@@ -382,8 +418,8 @@ impl Display for Expr {
         match self {
             Expr::Unknown => write!(f, "unknown"),
             Expr::Simple(x) => x.fmt(f),
-            Expr::Deref { ptr, size_bytes } => {
-                let size_bits = size_bytes * 8;
+            Expr::Deref { ptr, size } => {
+                let size_bits = size.bits();
                 write!(f, "*(u{size_bits}*){ptr}")
             }
             Expr::UnaryOp(op) => op.fmt(f),
@@ -419,7 +455,7 @@ pub enum Statement {
     Store {
         addr: SimpleExpr,
         value: SimpleExpr,
-        size_bytes: u8,
+        size: SizeBytes,
     },
 
     Call {
@@ -442,12 +478,8 @@ impl Display for Statement {
         match self {
             Statement::Nop => write!(f, "nop"),
             Statement::Assign { lhs, rhs } => write!(f, "{lhs} = {rhs}"),
-            Statement::Store {
-                addr,
-                value,
-                size_bytes,
-            } => {
-                let size_bits = size_bytes * 8;
+            Statement::Store { addr, value, size } => {
+                let size_bits = size.bits();
                 write!(f, "*(u{size_bits}*){addr} = {value}")
             }
             Statement::Call { target } => write!(f, "call {target}"),
