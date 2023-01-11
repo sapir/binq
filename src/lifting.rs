@@ -1,3 +1,5 @@
+use std::cmp::Ordering;
+
 use anyhow::Result;
 use iced_x86::{
     Decoder, Instruction, InstructionInfoFactory, InstructionInfoOptions, Mnemonic, OpAccess,
@@ -162,10 +164,27 @@ impl<'a> X86Lifter<'a> {
             }
 
             Lea => {
-                let rhs = self.memory_access(1).to_addr_simple_expr(out).into();
+                let addr_simple_expr = self.memory_access(1).to_addr_simple_expr(out);
+
                 let lhs = self.op_to_raw_reg(0).into();
-                // TODO: zero-extend or truncate if not the same size. note that
-                // size for addr may be 32-bit even in 64-bit mode.
+
+                let addr_size = self.decoder.bitness();
+                let lhs_size_bits = self.op_size_bits(0);
+                let change_width_kind = match u32::from(lhs_size_bits).cmp(&addr_size) {
+                    Ordering::Less => Some(ChangeWidthKind::Truncate),
+                    Ordering::Equal => None,
+                    Ordering::Greater => Some(ChangeWidthKind::ZeroExtend),
+                };
+                let rhs = if let Some(kind) = change_width_kind {
+                    Expr::ChangeWidth(ChangeWidthOp {
+                        kind,
+                        new_size_bits: lhs_size_bits,
+                        inner: addr_simple_expr,
+                    })
+                } else {
+                    Expr::from(addr_simple_expr)
+                };
+
                 out.push(Statement::Assign { lhs, rhs });
             }
 
