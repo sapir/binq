@@ -51,6 +51,47 @@ fn get_single_value_source(sources: &ValueSources, var: Variable) -> Option<Stat
         .copied()
 }
 
+#[derive(Clone, Copy, Debug)]
+struct PartiallyKnownConst {
+    value: u64,
+    known_bitmask: u64,
+}
+
+impl PartiallyKnownConst {
+    fn unknown() -> Self {
+        Self {
+            value: 0,
+            known_bitmask: 0,
+        }
+    }
+}
+
+impl From<u64> for PartiallyKnownConst {
+    fn from(value: u64) -> Self {
+        Self {
+            value,
+            known_bitmask: u64::MAX,
+        }
+    }
+}
+
+fn make_mask_for_x_bits(num_bits: u32) -> u64 {
+    (1u64 << num_bits) - 1
+}
+
+fn insert_bits(mut lhs: u64, shift: u32, num_bits: u32, rhs: u64) -> u64 {
+    let mask = make_mask_for_x_bits(num_bits);
+    lhs &= !(mask << shift);
+    lhs |= rhs << shift;
+    lhs
+}
+
+fn extract_bits(mut x: u64, shift: u32, num_bits: u32) -> u64 {
+    x >>= shift;
+    x &= make_mask_for_x_bits(num_bits);
+    x
+}
+
 struct ExprMatcherAt<'db, 'view, 'query, 'a> {
     addr: StatementAddr,
     value_sources: &'a ValueSources,
@@ -86,6 +127,15 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
             Expr::AnyConst | Expr::Const(_) => {
                 if let Some(inner) = self.get_inner_simple_expr(ir_expr) {
                     self.match_simple_expr(pattern_expr, inner)
+                } else if let Some(partial_x) = self.expand_to_const(ir_expr) {
+                    if [u8::MAX.into(), u16::MAX.into(), u32::MAX.into(), u64::MAX]
+                        .contains(&partial_x.known_bitmask)
+                    {
+                        assert_eq!(partial_x.value & partial_x.known_bitmask, partial_x.value);
+                        self.match_simple_expr(pattern_expr, &SimpleExpr::Const(partial_x.value))
+                    } else {
+                        false
+                    }
                 } else {
                     false
                 }
@@ -291,14 +341,8 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                 inner,
             }) => Some(inner),
 
-            // TODO: the value may change in the process
-            IrExpr::ExtractBits { inner, shift, .. } => {
-                if *shift == 0 {
-                    Some(inner)
-                } else {
-                    None
-                }
-            }
+            // These are handled by expand_to_const anyway.
+            IrExpr::InsertBits { .. } | IrExpr::ExtractBits { .. } => None,
 
             IrExpr::BinaryOp(BinaryOp { op, lhs, rhs }) => {
                 if lhs == rhs {
@@ -366,9 +410,71 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
             IrExpr::Deref { .. }
             | IrExpr::UnaryOp(_)
             | IrExpr::CompareOp(_)
-            | IrExpr::InsertBits { .. }
             | IrExpr::X86Flag { .. }
             | IrExpr::ComplexX86ConditionCode(_) => None,
+        }
+    }
+
+    fn expand_to_const(&mut self, expr: &IrExpr) -> Option<PartiallyKnownConst> {
+        match expr {
+            IrExpr::Simple(SimpleExpr::Const(x)) => Some((*x).into()),
+
+            IrExpr::Simple(SimpleExpr::Variable(var)) => {
+                let (source_addr, source_expr, source_value_sources) = self.try_expand_var(*var)?;
+
+                ExprMatcherAt::new(source_addr, source_value_sources, self.matcher)
+                    .expand_to_const(source_expr)
+            }
+
+            IrExpr::Unknown | IrExpr::Deref { .. } => None,
+
+            // Although we could try to evaluate these expressions, they
+            // don't count as a *const* number.
+            IrExpr::UnaryOp(_)
+            | IrExpr::BinaryOp(_)
+            | IrExpr::CompareOp(_)
+            | IrExpr::X86Flag(_)
+            | IrExpr::ComplexX86ConditionCode(_) => None,
+
+            // TODO
+            IrExpr::ChangeWidth(ChangeWidthOp { .. }) => None,
+
+            IrExpr::InsertBits {
+                lhs,
+                shift,
+                num_bits,
+                rhs,
+            } => {
+                let mut lhs = self
+                    .expand_to_const(&IrExpr::Simple(*lhs))
+                    .unwrap_or(PartiallyKnownConst::unknown());
+                let rhs = self.expand_to_const(&IrExpr::Simple(*rhs))?;
+
+                lhs.value = insert_bits(lhs.value, *shift, *num_bits, rhs.value);
+                lhs.known_bitmask =
+                    insert_bits(lhs.known_bitmask, *shift, *num_bits, rhs.known_bitmask);
+
+                if lhs.known_bitmask == 0 {
+                    None
+                } else {
+                    Some(lhs)
+                }
+            }
+
+            IrExpr::ExtractBits {
+                inner,
+                shift,
+                num_bits,
+            } => {
+                let mut inner = self.expand_to_const(&IrExpr::Simple(*inner))?;
+                inner.value = extract_bits(inner.value, *shift, *num_bits);
+                inner.known_bitmask = extract_bits(inner.known_bitmask, *shift, *num_bits);
+                if inner.known_bitmask == 0 {
+                    None
+                } else {
+                    Some(inner)
+                }
+            }
         }
     }
 
