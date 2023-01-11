@@ -985,7 +985,7 @@ pub fn wrap_x86_reg(reg: X86Register) -> Register {
     Register((reg as usize).try_into().unwrap())
 }
 
-fn unwrap_x86_reg(reg: Register) -> Option<X86Register> {
+pub fn unwrap_x86_reg(reg: Register) -> Option<X86Register> {
     X86Register::try_from(usize::from(reg.0)).ok()
 }
 

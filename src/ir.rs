@@ -225,10 +225,21 @@ pub enum BinaryOpKind {
     Xor,
 }
 
+impl BinaryOpKind {
+    pub fn is_shift_or_rotate(self) -> bool {
+        use BinaryOpKind::*;
+
+        matches!(self, Shl | Shr | Sar | Rol | Ror)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct BinaryOp {
     pub op: BinaryOpKind,
     pub lhs: SimpleExpr,
+    /// The right-hand side operand. This is expected to be of the same size as
+    /// `lhs` except for shift or rotate operations.
+    /// ([`BinaryOpKind::is_shift_or_rotate`])
     pub rhs: SimpleExpr,
 }
 
