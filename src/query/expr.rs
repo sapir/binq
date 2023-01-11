@@ -5,8 +5,9 @@ use crate::{
     analysis::data_flow::ValueSources,
     database::{Database, StatementAddr},
     ir::{
-        BinaryOp, BinaryOpKind, CompareOp, CompareOpKind, ComplexX86ConditionCode, Expr as IrExpr,
-        ExtendOp, SimpleExpr, Statement, UnaryOp, UnaryOpKind, Variable, X86Flag, X86FlagResult,
+        BinaryOp, BinaryOpKind, ChangeWidthOp, CompareOp, CompareOpKind, ComplexX86ConditionCode,
+        Expr as IrExpr, SimpleExpr, Statement, UnaryOp, UnaryOpKind, Variable, X86Flag,
+        X86FlagResult,
     },
     lifting::ir_flag_to_register,
 };
@@ -157,8 +158,9 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
             IrExpr::Simple(simple)
             // Any extension of a boolean value can also be treated as a boolean
             // value, so just ignore the extension part.
-            | IrExpr::Extend(ExtendOp {
+            | IrExpr::ChangeWidth(ChangeWidthOp {
                 kind: _,
+                new_size_bits: _,
                 inner: simple,
             }) => {
                 // TODO: don't clone :(
@@ -246,7 +248,11 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
             IrExpr::Simple(inner) => Some(inner),
 
             // TODO: the value may change in the process
-            IrExpr::Extend(ExtendOp { kind: _, inner }) => Some(inner),
+            IrExpr::ChangeWidth(ChangeWidthOp {
+                kind: _,
+                new_size_bits: _,
+                inner,
+            }) => Some(inner),
 
             // TODO: the value may change in the process
             IrExpr::ExtractBits { inner, shift, .. } => {

@@ -3,7 +3,7 @@ use hecs::{Entity, World};
 use crate::{
     database::{Database, StatementAddr},
     ir::{
-        BinaryOp, CompareOp, Expr, ExtendOp, SimpleExpr, Statement, UnaryOp, Variable,
+        BinaryOp, ChangeWidthOp, CompareOp, Expr, SimpleExpr, Statement, UnaryOp, Variable,
         X86FlagResult,
     },
     lifting::{REG_CF, REG_OF, REG_SF, REG_ZF},
@@ -176,7 +176,11 @@ fn expr_uses_var(expr: &Expr, var: Variable) -> bool {
         Expr::Unknown => false,
 
         Expr::Simple(x)
-        | Expr::Extend(ExtendOp { kind: _, inner: x })
+        | Expr::ChangeWidth(ChangeWidthOp {
+            kind: _,
+            new_size_bits: _,
+            inner: x,
+        })
         | Expr::Deref {
             ptr: x,
             size_bytes: _,

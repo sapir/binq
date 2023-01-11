@@ -7,9 +7,9 @@ use iced_x86::{
 use crate::{
     database::{NextStatementAddr, StatementAddr},
     ir::{
-        Addr64, BinaryOp, BinaryOpKind, CompareOp, CompareOpKind, ComplexX86ConditionCode, Const,
-        Expr, ExtendKind, ExtendOp, Register, SimpleExpr, Statement, Temp, UnaryOp, UnaryOpKind,
-        Variable, X86Flag, X86FlagResult,
+        Addr64, BinaryOp, BinaryOpKind, ChangeWidthKind, ChangeWidthOp, CompareOp, CompareOpKind,
+        ComplexX86ConditionCode, Const, Expr, Register, SimpleExpr, Statement, Temp, UnaryOp,
+        UnaryOpKind, Variable, X86Flag, X86FlagResult,
     },
 };
 
@@ -127,13 +127,14 @@ impl<'a> X86Lifter<'a> {
 
                 let extend_kind = match mnemonic {
                     Mov => None,
-                    Movsx => Some(ExtendKind::SignExtend),
-                    Movzx => Some(ExtendKind::ZeroExtend),
+                    Movsx => Some(ChangeWidthKind::SignExtend),
+                    Movzx => Some(ChangeWidthKind::ZeroExtend),
                     _ => unreachable!(),
                 };
                 if let Some(extend_kind) = extend_kind {
-                    rhs = Expr::Extend(ExtendOp {
+                    rhs = Expr::ChangeWidth(ChangeWidthOp {
                         kind: extend_kind,
+                        new_size_bits: self.op_size_bits(0),
                         inner: out.expr_to_simple(rhs),
                     });
                 }
@@ -626,6 +627,40 @@ impl<'a> X86Lifter<'a> {
 
         for f in iter_rflags_bits(self.cur_insn.rflags_set() & self.unimpl_flags) {
             self.set_flag(out, f, f.register(), 1.into());
+        }
+    }
+
+    fn op_size_bits(&self, index: u32) -> u8 {
+        match self.cur_insn.op_kind(index) {
+            OpKind::Register => self.cur_insn.op_register(index).size().try_into().unwrap(),
+
+            OpKind::Immediate8 | OpKind::Immediate8_2nd => 8,
+
+            OpKind::NearBranch16
+            | OpKind::FarBranch16
+            | OpKind::Immediate16
+            | OpKind::Immediate8to16 => 16,
+
+            OpKind::NearBranch32
+            | OpKind::FarBranch32
+            | OpKind::Immediate32
+            | OpKind::Immediate8to32 => 32,
+
+            OpKind::NearBranch64
+            | OpKind::Immediate64
+            | OpKind::Immediate8to64
+            | OpKind::Immediate32to64 => 64,
+
+            OpKind::MemorySegSI
+            | OpKind::MemorySegESI
+            | OpKind::MemorySegRSI
+            | OpKind::MemorySegDI
+            | OpKind::MemorySegEDI
+            | OpKind::MemorySegRDI
+            | OpKind::MemoryESDI
+            | OpKind::MemoryESEDI
+            | OpKind::MemoryESRDI
+            | OpKind::Memory => self.cur_insn.memory_size().size().try_into().unwrap(),
         }
     }
 }

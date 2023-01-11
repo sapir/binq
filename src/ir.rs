@@ -123,26 +123,33 @@ impl Display for SimpleExpr {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub enum ExtendKind {
+pub enum ChangeWidthKind {
+    Truncate,
     ZeroExtend,
     SignExtend,
 }
 
 #[derive(Clone, Debug)]
-pub struct ExtendOp {
-    pub kind: ExtendKind,
+pub struct ChangeWidthOp {
+    pub kind: ChangeWidthKind,
+    pub new_size_bits: u8,
+    /// This is expected to always be a `SimpleExpr::Variable`. We could use a
+    /// `Variable` here instead of a `SimpleExpr` but it's easier for code
+    /// handling it if it's a `SimpleExpr` like everything else.
     pub inner: SimpleExpr,
 }
 
-impl Display for ExtendOp {
+impl Display for ChangeWidthOp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{}({})",
+            "{}(u{}, {})",
             match self.kind {
-                ExtendKind::ZeroExtend => "zero_extend",
-                ExtendKind::SignExtend => "sign_extend",
+                ChangeWidthKind::Truncate => "truncate",
+                ChangeWidthKind::ZeroExtend => "zero_extend",
+                ChangeWidthKind::SignExtend => "sign_extend",
             },
+            self.new_size_bits,
             self.inner
         )
     }
@@ -335,7 +342,7 @@ impl Display for ComplexX86ConditionCode {
 pub enum Expr {
     Unknown,
     Simple(SimpleExpr),
-    Extend(ExtendOp),
+    ChangeWidth(ChangeWidthOp),
     Deref {
         ptr: SimpleExpr,
         size_bytes: u8,
@@ -382,7 +389,7 @@ impl Display for Expr {
             Expr::UnaryOp(op) => op.fmt(f),
             Expr::BinaryOp(op) => op.fmt(f),
             Expr::CompareOp(op) => op.fmt(f),
-            Expr::Extend(op) => op.fmt(f),
+            Expr::ChangeWidth(op) => op.fmt(f),
             Expr::InsertBits {
                 lhs,
                 shift,
