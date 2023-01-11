@@ -3,6 +3,8 @@ use std::{
     process::Command,
 };
 
+use itertools::Itertools;
+
 use crate::{
     analysis::analyze,
     database::{ArchAndAbi, Database, StatementAddr},
@@ -110,6 +112,7 @@ fn asm_addrs(stmt_addrs: impl IntoIterator<Item = StatementAddr>) -> Vec<Addr64>
     stmt_addrs
         .into_iter()
         .map(|stmt_addr| stmt_addr.asm_addr)
+        .unique()
         .collect()
 }
 

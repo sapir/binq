@@ -34,4 +34,5 @@ features = [
 ]
 
 [dev-dependencies]
+itertools = "0.10.5"
 tempfile = "3.3.0"
