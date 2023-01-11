@@ -18,7 +18,7 @@ const BASE_ADDR: Addr64 = 0x1000;
 fn run(command: &mut Command) {
     let status = command
         .status()
-        .unwrap_or_else(|err| panic!("failed to run {:?}: {}", command, err));
+        .unwrap_or_else(|err| panic!("failed to run {command:?}: {err}"));
 
     if !status.success() {
         panic!("'{:?}' returned an error ({:?})", command, status.code());
@@ -45,14 +45,14 @@ fn assemble(bitness: u32, code: &str) -> Vec<u8> {
             )
             .unwrap();
         src_file.write_all(code.as_bytes()).unwrap();
-        if !code.ends_with("\n") {
+        if !code.ends_with('\n') {
             src_file.write_all(b"\n").unwrap();
         }
         src_file.flush().unwrap();
     }
 
     run(Command::new("cc")
-        .arg(&format!("-m{bitness}"))
+        .arg(format!("-m{bitness}"))
         .arg("-x")
         .arg("assembler")
         .arg("-c")
