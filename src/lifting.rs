@@ -188,8 +188,12 @@ impl<'a> X86Lifter<'a> {
                     RoughOpKind::Immediate => unreachable!(),
 
                     RoughOpKind::Memory => {
-                        let lhs_addr = self.memory_access(0).to_addr_simple_expr(out);
-                        lhs = out.expr_to_simple(Expr::Deref(lhs_addr));
+                        let mem_access = self.memory_access(0);
+                        let lhs_addr = mem_access.to_addr_simple_expr(out);
+                        lhs = out.expr_to_simple(Expr::Deref {
+                            ptr: lhs_addr,
+                            size_bytes: mem_access.size,
+                        });
                         lvalue = Lvalue::Memory { addr: lhs_addr };
                     }
                 }
@@ -485,8 +489,11 @@ impl<'a> X86Lifter<'a> {
             RoughOpKind::Register => SimpleExpr::Variable(self.op_to_reg(index).into()).into(),
             RoughOpKind::Immediate => SimpleExpr::Const(self.op_to_imm(index)).into(),
             RoughOpKind::Memory => {
-                let addr = self.memory_access(index).to_addr_simple_expr(out);
-                Expr::Deref(addr)
+                let mem_access = self.memory_access(index);
+                Expr::Deref {
+                    ptr: mem_access.to_addr_simple_expr(out),
+                    size_bytes: mem_access.size,
+                }
             }
         }
     }
@@ -728,7 +735,10 @@ impl Output {
         let stack_register = self.stack_register();
         let size = stack_register.size();
         let stack_register = wrap_x86_reg(stack_register);
-        let value = self.expr_to_simple(Expr::Deref(stack_register.into()));
+        let value = self.expr_to_simple(Expr::Deref {
+            ptr: stack_register.into(),
+            size_bytes: size.try_into().unwrap(),
+        });
 
         self.push(Statement::Assign {
             lhs: stack_register.into(),

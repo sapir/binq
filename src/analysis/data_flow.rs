@@ -175,7 +175,10 @@ fn expr_uses_var(expr: &Expr, var: Variable) -> bool {
 
         Expr::Simple(x)
         | Expr::Extend(ExtendOp { kind: _, inner: x })
-        | Expr::Deref(x)
+        | Expr::Deref {
+            ptr: x,
+            size_bytes: _,
+        }
         | Expr::UnaryOp(UnaryOp { op: _, value: x }) => simple_expr_is_var(x, var),
 
         Expr::BinaryOp(BinaryOp { op: _, lhs, rhs })

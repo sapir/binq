@@ -328,7 +328,10 @@ pub enum Expr {
     Unknown,
     Simple(SimpleExpr),
     Extend(ExtendOp),
-    Deref(SimpleExpr),
+    Deref {
+        ptr: SimpleExpr,
+        size_bytes: u8,
+    },
     UnaryOp(UnaryOp),
     BinaryOp(BinaryOp),
     CompareOp(CompareOp),
@@ -358,7 +361,10 @@ impl Display for Expr {
         match self {
             Expr::Unknown => write!(f, "unknown"),
             Expr::Simple(x) => x.fmt(f),
-            Expr::Deref(x) => write!(f, "*{x}"),
+            Expr::Deref { ptr, size_bytes } => {
+                let size_bits = size_bytes * 8;
+                write!(f, "*(u{size_bits}*){ptr}")
+            }
             Expr::UnaryOp(op) => op.fmt(f),
             Expr::BinaryOp(op) => op.fmt(f),
             Expr::CompareOp(op) => op.fmt(f),

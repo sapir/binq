@@ -91,7 +91,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
             }
 
             Expr::Deref(pat_inner) => match ir_expr {
-                IrExpr::Deref(ir_inner) => self.match_simple_expr(pat_inner, ir_inner),
+                IrExpr::Deref { ptr, size_bytes: _ } => self.match_simple_expr(pat_inner, ptr),
 
                 _ => false,
             },
@@ -148,7 +148,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
     fn match_condition_pattern(&mut self, pat_cond: &ConditionExpr, ir_expr: &IrExpr) -> bool {
         match ir_expr {
             IrExpr::Unknown
-            | IrExpr::Deref(_)
+            | IrExpr::Deref { .. }
             | IrExpr::BinaryOp(_)
             | IrExpr::InsertBits { .. } => false,
 
@@ -309,7 +309,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                 None
             }
 
-            IrExpr::Deref(_)
+            IrExpr::Deref { .. }
             | IrExpr::UnaryOp(_)
             | IrExpr::CompareOp(_)
             | IrExpr::InsertBits { .. }
