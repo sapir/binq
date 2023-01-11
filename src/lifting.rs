@@ -362,6 +362,11 @@ impl<'a> X86Lifter<'a> {
                     _ => unreachable!(),
                 };
                 let value = out.expr_to_simple(value);
+                let value = Expr::ChangeWidth(ChangeWidthOp {
+                    kind: ChangeWidthKind::ZeroExtend,
+                    new_size: self.op_size(0).into(),
+                    inner: value,
+                });
 
                 out.push_assign_lvalue(lhs, value);
             }
@@ -794,13 +799,14 @@ impl Output {
         }
     }
 
-    fn push_assign_lvalue(&mut self, lhs: Lvalue, rhs: SimpleExpr) {
+    fn push_assign_lvalue(&mut self, lhs: Lvalue, rhs: Expr) {
         match lhs {
             Lvalue::Variable(var) => {
-                self.push_assign(var, rhs.into());
+                self.push_assign(var, rhs);
             }
 
             Lvalue::Memory { addr, size } => {
+                let rhs = self.expr_to_simple(rhs);
                 self.push(Statement::Store {
                     addr,
                     value: rhs,
