@@ -215,10 +215,15 @@ impl<'a> X86Lifter<'a> {
                             lhs,
                             rhs,
                         }));
+                        let cf = out.expr_to_simple(Expr::ChangeWidth(ChangeWidthOp {
+                            kind: ChangeWidthKind::ZeroExtend,
+                            new_size: self.op_size(0).into(),
+                            inner: REG_CF.into(),
+                        }));
                         out.save_expr_in_temp(Expr::BinaryOp(BinaryOp {
                             op: BinaryOpKind::Add,
                             lhs: x,
-                            rhs: REG_CF.into(),
+                            rhs: cf,
                         }))
                     }
 
@@ -228,10 +233,15 @@ impl<'a> X86Lifter<'a> {
                             lhs,
                             rhs,
                         }));
+                        let cf = out.expr_to_simple(Expr::ChangeWidth(ChangeWidthOp {
+                            kind: ChangeWidthKind::ZeroExtend,
+                            new_size: self.op_size(0).into(),
+                            inner: REG_CF.into(),
+                        }));
                         out.save_expr_in_temp(Expr::BinaryOp(BinaryOp {
                             op: BinaryOpKind::Sub,
                             lhs: x,
-                            rhs: REG_CF.into(),
+                            rhs: cf,
                         }))
                     }
 
