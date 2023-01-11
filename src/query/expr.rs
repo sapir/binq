@@ -191,7 +191,9 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
 
             (Expr::AnyConst, SimpleExpr::Const(_)) => true,
 
-            (Expr::Const(pat_x), SimpleExpr::Const(ir_x)) => *pat_x == *ir_x,
+            (Expr::Const(pat_x), SimpleExpr::Const(ir_x)) => {
+                self.match_const_numbers(*pat_x, *ir_x)
+            }
 
             (Expr::Deref(_) | Expr::Condition(_), SimpleExpr::Const(_)) => false,
 
@@ -211,6 +213,41 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                 }
             }
         }
+    }
+
+    fn match_const_numbers(&self, pattern: u64, ir_val: u64) -> bool {
+        if pattern == ir_val {
+            return true;
+        }
+
+        let equiv_patterns = self.equiv_const_patterns(pattern);
+        equiv_patterns.contains(&ir_val)
+    }
+
+    fn equiv_const_patterns(&self, x: u64) -> Vec<u64> {
+        let mut v = vec![x];
+
+        let signed_x = x as i64;
+
+        if signed_x < 0 {
+            // TODO: this should maybe depend on the data size
+            // Match 8-bit negative numbers
+            if let Ok(signed_x) = i8::try_from(signed_x) {
+                v.push((signed_x as u8).into());
+            }
+
+            // Match 16-bit negative numbers
+            if let Ok(signed_x) = i16::try_from(signed_x) {
+                v.push((signed_x as u16).into());
+            }
+
+            // Match 32-bit negative numbers
+            if let Ok(signed_x) = i32::try_from(signed_x) {
+                v.push((signed_x as u32).into());
+            }
+        }
+
+        v
     }
 
     fn try_expand_var(
