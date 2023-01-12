@@ -7,14 +7,17 @@ use crate::{
     ir::Statement,
 };
 
-use self::{expr::ExprMatcher, fields::match_expr_filter};
+use self::{
+    expr::{Captures, ExprMatcher},
+    fields::match_expr_filter,
+};
 
 pub use self::{
-    expr::{ConditionExpr, Expr},
+    expr::{CaptureValue, ConditionExpr, Expr, ExprMatch},
     fields::{ExprMatchFilter, Field},
 };
 
-pub fn search(database: &mut Database, filters: &[ExprMatchFilter]) -> Vec<StatementAddr> {
+pub fn search(database: &mut Database, filters: &[ExprMatchFilter]) -> Vec<ExprMatch> {
     let mut query = database.world.query::<(&Statement, &ValueSources)>();
     let view = query.view();
 
@@ -25,14 +28,18 @@ pub fn search(database: &mut Database, filters: &[ExprMatchFilter]) -> Vec<State
         .query::<(&StatementAddr, &Statement, &ValueSources)>()
         .into_iter()
         .filter_map(|(_entity, (addr, stmt, value_sources))| {
-            if filters
-                .iter()
-                .all(|filter| match_expr_filter(&mut matcher, *addr, stmt, value_sources, filter))
-            {
-                Some(*addr)
-            } else {
-                None
+            let mut captures = Captures::new();
+
+            for filter in filters {
+                let filter_captures =
+                    match_expr_filter(&mut matcher, *addr, stmt, value_sources, filter)?;
+                captures = captures.union(filter_captures);
             }
+
+            Some(ExprMatch {
+                match_addr: *addr,
+                captures,
+            })
         })
         .collect()
 }

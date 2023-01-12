@@ -9,7 +9,7 @@ use crate::{
     lifting::wrap_x86_reg,
 };
 
-use super::expr::{Expr, ExprMatcher};
+use super::expr::{Captures, Expr, ExprMatcher};
 
 const X64_CALL_REG_ARGS: [X86Register; 6] = [
     X86Register::RDI,
@@ -113,10 +113,10 @@ pub(super) fn match_expr_filter(
     stmt: &Statement,
     value_sources: &ValueSources,
     filter: &ExprMatchFilter,
-) -> bool {
+) -> Option<Captures> {
     let ExprMatchFilter { field, expr } = filter;
 
-    let Some(ir_expr) = get_field(matcher.database().arch_and_abi, stmt, *field) else { return false };
+    let ir_expr = get_field(matcher.database().arch_and_abi, stmt, *field)?;
 
     match ir_expr {
         MaybeSimpleExpr::Simple(ir_expr) => {

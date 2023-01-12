@@ -7,10 +7,10 @@ use itertools::Itertools;
 
 use crate::{
     analysis::analyze,
-    database::{ArchAndAbi, Database, StatementAddr},
+    database::{ArchAndAbi, Database},
     ir::{Addr64, CompareOpKind},
     print_il,
-    query::{search, ConditionExpr, Expr, ExprMatchFilter, Field},
+    query::{search, ConditionExpr, Expr, ExprMatch, ExprMatchFilter, Field},
 };
 
 const BASE_ADDR: Addr64 = 0x1000;
@@ -108,10 +108,10 @@ fn assemble_to_db(arch_and_abi: ArchAndAbi, code: &str) -> Database {
     db
 }
 
-fn asm_addrs(stmt_addrs: impl IntoIterator<Item = StatementAddr>) -> Vec<Addr64> {
+fn asm_addrs(stmt_addrs: impl IntoIterator<Item = ExprMatch>) -> Vec<Addr64> {
     stmt_addrs
         .into_iter()
-        .map(|stmt_addr| stmt_addr.asm_addr)
+        .map(|expr_match| expr_match.match_addr.asm_addr)
         .unique()
         .collect()
 }

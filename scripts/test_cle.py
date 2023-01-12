@@ -7,6 +7,7 @@ from binq.cle import load
 if __name__ == "__main__":
     db = load("x64", sys.argv[1])
 
-    query = {"value": E.ANY + E(0x10)}
-    for asm_addr, il_index in db.search(query):
-        print(f"{asm_addr:#x}/{il_index}")
+    query = {"value": E.ANY.named("x") + E(0x10)}
+    for m in db.search(query):
+        asm_addr, il_index = m.pop("match_addr")
+        print(f"{asm_addr:#x}/{il_index}: {m}")

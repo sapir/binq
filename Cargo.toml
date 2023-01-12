@@ -13,6 +13,7 @@ anyhow = "1.0.66"
 hecs = { version = "0.9.1", features = ["macros"] }
 phf = { version = "0.11.1", features = ["macros"] }
 smallvec = "1.10.0"
+im-rc = "15.1.0"
 
 [dependencies.pyo3]
 version = "0.17.3"

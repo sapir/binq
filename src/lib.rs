@@ -21,7 +21,7 @@ use pyo3::{
     prelude::*,
     types::{PyDict, PyLong},
 };
-use query::{search, Expr, ExprMatchFilter, Field};
+use query::{search, CaptureValue, Expr, ExprMatch, ExprMatchFilter, Field};
 
 use self::{
     database::Database,
@@ -55,6 +55,13 @@ impl PyExpr {
         } else {
             Err(PyValueError::new_err("Bad expression value"))
         }
+    }
+
+    fn named(&self, name: String) -> Self {
+        Self(Expr::Named {
+            inner: Box::new(self.0.clone()),
+            name,
+        })
     }
 
     fn deref(&self) -> Self {
@@ -183,7 +190,7 @@ impl PyDatabase {
         analysis::analyze(&mut self.0);
     }
 
-    fn search(&mut self, query: &PyDict) -> PyResult<Vec<(Addr64, usize)>> {
+    fn search<'py>(&mut self, py: Python<'py>, query: &PyDict) -> PyResult<Vec<&'py PyDict>> {
         let filters = {
             let mut filters = vec![];
 
@@ -214,10 +221,29 @@ impl PyDatabase {
             filters
         };
 
-        Ok(search(&mut self.0, &filters)
+        search(&mut self.0, &filters)
             .into_iter()
-            .map(|StatementAddr { asm_addr, ir_index }| (asm_addr, ir_index))
-            .collect())
+            .map(
+                |ExprMatch {
+                     match_addr,
+                     captures,
+                 }| {
+                    let d = PyDict::new(py);
+                    d.set_item("match_addr", (match_addr.asm_addr, match_addr.ir_index))?;
+                    for (k, CaptureValue { expr, at }) in captures {
+                        let v = match expr {
+                            ir::Expr::Simple(ir::SimpleExpr::Const(x)) => x.to_object(py),
+                            _ => expr.to_string().to_object(py),
+                        };
+                        let v_d = PyDict::new(py);
+                        v_d.set_item("value", v)?;
+                        v_d.set_item("at", (at.asm_addr, at.ir_index))?;
+                        d.set_item(k, v_d)?;
+                    }
+                    Ok(d)
+                },
+            )
+            .collect()
     }
 
     fn print_il(&mut self) {

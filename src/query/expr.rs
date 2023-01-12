@@ -15,6 +15,7 @@ use crate::{
 #[derive(Clone, Debug)]
 pub enum Expr {
     Any,
+    Named { inner: Box<Expr>, name: String },
     AnyConst,
     Const(u64),
     Deref(Box<Expr>),
@@ -120,9 +121,23 @@ impl Drop for ExprMatcherAt<'_, '_, '_, '_> {
 }
 
 impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
-    fn match_expr(&mut self, pattern_expr: &Expr, ir_expr: &IrExpr) -> bool {
+    fn add_capture(&self, captures: Captures, name: &String, ir_expr: IrExpr) -> Captures {
+        captures.update(
+            name.clone(),
+            CaptureValue {
+                expr: ir_expr,
+                at: self.addr,
+            },
+        )
+    }
+
+    fn match_expr(&mut self, pattern_expr: &Expr, ir_expr: &IrExpr) -> Option<Captures> {
         match pattern_expr {
-            Expr::Any => true,
+            Expr::Any => Some(Captures::new()),
+
+            Expr::Named { inner, name } => self
+                .match_expr(inner, ir_expr)
+                .map(|captures| self.add_capture(captures, name, ir_expr.clone())),
 
             Expr::AnyConst | Expr::Const(_) => {
                 if let Some(inner) = self.get_inner_simple_expr(ir_expr) {
@@ -134,22 +149,22 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                         assert_eq!(partial_x.value & partial_x.known_bitmask, partial_x.value);
                         self.match_simple_expr(pattern_expr, &SimpleExpr::Const(partial_x.value))
                     } else {
-                        false
+                        None
                     }
                 } else {
-                    false
+                    None
                 }
             }
 
             Expr::Deref(pat_inner) => match ir_expr {
                 IrExpr::Deref { ptr, size: _ } => self.match_simple_expr(pat_inner, ptr),
 
-                _ => false,
+                _ => None,
             },
 
             Expr::Sum(inner_patterns) | Expr::Product(inner_patterns) => {
                 match inner_patterns.as_slice() {
-                    [] => false,
+                    [] => None,
 
                     [inner_pattern] => self.match_expr(inner_pattern, ir_expr),
 
@@ -163,9 +178,9 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                         if let IrExpr::BinaryOp(BinaryOp { op, lhs, rhs }) = ir_expr {
                             if *op == expected_op {
                                 for (lhs_index, lhs_pattern) in inner_patterns.iter().enumerate() {
-                                    if !self.match_simple_expr(lhs_pattern, lhs) {
-                                        continue;
-                                    };
+                                    let Some(lhs_captures) =
+                                        self.match_simple_expr(lhs_pattern, lhs)
+                                    else { continue };
 
                                     // TODO: shouldn't have to clone here
                                     let rhs_patterns = {
@@ -180,14 +195,16 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                                         _ => unreachable!(),
                                     };
 
-                                    if self.match_simple_expr(&rhs_pattern, rhs) {
-                                        return true;
+                                    if let Some(rhs_captures) =
+                                        self.match_simple_expr(&rhs_pattern, rhs)
+                                    {
+                                        return Some(lhs_captures.union(rhs_captures));
                                     }
                                 }
                             }
                         }
 
-                        false
+                        None
                     }
                 }
             }
@@ -196,14 +213,18 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
         }
     }
 
-    fn match_condition_pattern(&mut self, pat_cond: &ConditionExpr, ir_expr: &IrExpr) -> bool {
+    fn match_condition_pattern(
+        &mut self,
+        pat_cond: &ConditionExpr,
+        ir_expr: &IrExpr,
+    ) -> Option<Captures> {
         match ir_expr {
             IrExpr::Unknown
             | IrExpr::Deref { .. }
-            | IrExpr::BinaryOp(_) => false,
+            | IrExpr::BinaryOp(_) => None,
 
             // TODO: handle conditions using Insert/ExtractBits
-            IrExpr::InsertBits { .. } | IrExpr::ExtractBits { .. } => false,
+            IrExpr::InsertBits { .. } | IrExpr::ExtractBits { .. } => None,
 
             IrExpr::Simple(simple)
             // Any extension of a boolean value can also be treated as a boolean
@@ -233,25 +254,29 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
         }
     }
 
-    fn match_simple_expr(&mut self, pattern_expr: &Expr, ir_expr: &SimpleExpr) -> bool {
+    fn match_simple_expr(&mut self, pattern_expr: &Expr, ir_expr: &SimpleExpr) -> Option<Captures> {
         match (pattern_expr, ir_expr) {
-            (Expr::Any, _) => true,
+            (Expr::Any, _) => Some(Captures::new()),
+
+            (Expr::Named { inner, name }, _) => self
+                .match_simple_expr(&inner, ir_expr)
+                .map(|captures| self.add_capture(captures, name, (*ir_expr).into())),
 
             (_, SimpleExpr::Variable(ir_var)) => self.match_var(pattern_expr, *ir_var),
 
-            (Expr::AnyConst, SimpleExpr::Const(_)) => true,
+            (Expr::AnyConst, SimpleExpr::Const(_)) => Some(Captures::new()),
 
             (Expr::Const(pat_x), SimpleExpr::Const(ir_x)) => {
-                self.match_const_numbers(*pat_x, *ir_x)
+                empty_captures_if(self.match_const_numbers(*pat_x, *ir_x))
             }
 
-            (Expr::Deref(_) | Expr::Condition(_), SimpleExpr::Const(_)) => false,
+            (Expr::Deref(_) | Expr::Condition(_), SimpleExpr::Const(_)) => None,
 
             (Expr::Sum(terms), ir_expr @ SimpleExpr::Const(_)) => {
                 if let [term] = &terms[..] {
                     self.match_simple_expr(term, ir_expr)
                 } else {
-                    false
+                    None
                 }
             }
 
@@ -259,7 +284,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                 if let [factor] = &factors[..] {
                     self.match_simple_expr(factor, ir_expr)
                 } else {
-                    false
+                    None
                 }
             }
         }
@@ -320,9 +345,8 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
         Some((source_addr, rhs, source_value_sources))
     }
 
-    fn match_var(&mut self, pattern_expr: &Expr, ir_var: Variable) -> bool {
-        let Some((source_addr, source_expr, source_value_sources)) = self.try_expand_var(ir_var)
-        else { return false };
+    fn match_var(&mut self, pattern_expr: &Expr, ir_var: Variable) -> Option<Captures> {
+        let (source_addr, source_expr, source_value_sources) = self.try_expand_var(ir_var)?;
 
         ExprMatcherAt::new(source_addr, source_value_sources, self.matcher)
             .match_expr(pattern_expr, source_expr)
@@ -398,9 +422,9 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                 };
 
                 let const_pattern = Expr::Const(identity);
-                if self.match_simple_expr(&const_pattern, rhs) {
+                if self.match_simple_expr(&const_pattern, rhs).is_some() {
                     return Some(lhs);
-                } else if is_commutative && self.match_simple_expr(&const_pattern, lhs) {
+                } else if is_commutative && self.match_simple_expr(&const_pattern, lhs).is_some() {
                     return Some(rhs);
                 }
 
@@ -478,39 +502,58 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
         }
     }
 
-    fn match_compare_op(&mut self, pat_cond: &ConditionExpr, ir_op: &CompareOp) -> bool {
+    fn match_compare_op(
+        &mut self,
+        pat_cond: &ConditionExpr,
+        ir_op: &CompareOp,
+    ) -> Option<Captures> {
         fn match_direct(
             matcher: &mut ExprMatcherAt,
             pat_cond: &ConditionExpr,
             ir_op: &CompareOp,
-        ) -> bool {
-            let unswapped_match = matcher.match_simple_expr(&pat_cond.lhs, &ir_op.lhs)
-                && matcher.match_simple_expr(&pat_cond.rhs, &ir_op.rhs);
-            if pat_cond.kind == ir_op.kind && unswapped_match {
-                return true;
+        ) -> Option<Captures> {
+            let unswapped_match = match_two(
+                matcher,
+                |matcher| matcher.match_simple_expr(&pat_cond.lhs, &ir_op.lhs),
+                |matcher| matcher.match_simple_expr(&pat_cond.rhs, &ir_op.rhs),
+            );
+            if pat_cond.kind == ir_op.kind && unswapped_match.is_some() {
+                return unswapped_match;
             }
 
-            let swapped_match = matcher.match_simple_expr(&pat_cond.lhs, &ir_op.rhs)
-                && matcher.match_simple_expr(&pat_cond.rhs, &ir_op.lhs);
-            if pat_cond.kind == ir_op.kind && pat_cond.kind.is_symmetric() && swapped_match {
-                return true;
+            let swapped_match = match_two(
+                matcher,
+                |matcher| matcher.match_simple_expr(&pat_cond.lhs, &ir_op.rhs),
+                |matcher| matcher.match_simple_expr(&pat_cond.rhs, &ir_op.lhs),
+            );
+            if pat_cond.kind == ir_op.kind
+                && pat_cond.kind.is_symmetric()
+                && swapped_match.is_some()
+            {
+                return swapped_match;
             }
 
             // TODO: Notify caller if we're actually returning the inverse / swapped
-            if pat_cond.kind == ir_op.kind.swapped_inverse() && (unswapped_match || swapped_match) {
-                return true;
+            if pat_cond.kind == ir_op.kind.swapped_inverse() {
+                if swapped_match.is_some() {
+                    return swapped_match;
+                }
+
+                if pat_cond.kind.is_symmetric() && unswapped_match.is_some() {
+                    return unswapped_match;
+                }
             }
 
-            false
+            None
         }
 
         fn match_direct_or_off_by_one(
             matcher: &mut ExprMatcherAt,
             pat_cond: &ConditionExpr,
             ir_op: &CompareOp,
-        ) -> bool {
-            if match_direct(matcher, pat_cond, ir_op) {
-                return true;
+        ) -> Option<Captures> {
+            if let Some(captures) = match_direct(matcher, pat_cond, ir_op) {
+                return Some(captures);
             }
 
             // Handle "off-by-one" comparisons (e.g. <= 0xf instead of < 0x10)
@@ -529,7 +572,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
             if let Some((kind, offset)) = offset_cmp_kind_and_value {
                 if let Expr::Const(rhs) = pat_cond.rhs {
                     // TODO: don't clone :(
-                    if match_direct(
+                    if let Some(captures) = match_direct(
                         matcher,
                         &ConditionExpr {
                             kind,
@@ -538,7 +581,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                         },
                         ir_op,
                     ) {
-                        return true;
+                        return Some(captures);
                     }
                 }
 
@@ -546,7 +589,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                 // `0x10 <= x`
                 if let Expr::Const(lhs) = pat_cond.lhs {
                     // TODO: don't clone :(
-                    if match_direct(
+                    if let Some(captures) = match_direct(
                         matcher,
                         &ConditionExpr {
                             kind,
@@ -555,16 +598,16 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                         },
                         ir_op,
                     ) {
-                        return true;
+                        return Some(captures);
                     }
                 }
             }
 
-            false
+            None
         }
 
-        if match_direct_or_off_by_one(self, pat_cond, ir_op) {
-            return true;
+        if let Some(captures) = match_direct_or_off_by_one(self, pat_cond, ir_op) {
+            return Some(captures);
         }
 
         // `0 les x && x lts y` with a constant y could be compiled to `x ltu
@@ -576,9 +619,9 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
             rhs: ir_y,
         } = ir_op
         {
-            if self.match_simple_expr(&Expr::AnyConst, ir_y) {
+            if self.match_simple_expr(&Expr::AnyConst, ir_y).is_some() {
                 // Match `0 les x`
-                if self.match_compare_op(
+                if let Some(captures) = self.match_compare_op(
                     pat_cond,
                     &CompareOp {
                         kind: CompareOpKind::LessThanOrEqualSigned,
@@ -586,7 +629,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                         rhs: *ir_x,
                     },
                 ) {
-                    return true;
+                    return Some(captures);
                 }
 
                 // Match `x lts/les y`
@@ -595,7 +638,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                     CompareOpKind::LessThanOrEqualUnsigned => CompareOpKind::LessThanOrEqualSigned,
                     _ => unreachable!(),
                 };
-                if self.match_compare_op(
+                if let Some(captures) = self.match_compare_op(
                     pat_cond,
                     &CompareOp {
                         kind: signed_op_for_y,
@@ -603,19 +646,19 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                         rhs: *ir_y,
                     },
                 ) {
-                    return true;
+                    return Some(captures);
                 }
             }
         }
 
-        false
+        None
     }
 
     fn match_x86_flag_condition(
         &mut self,
         pat_cond: &ConditionExpr,
         x86_flag_info: &X86FlagResult,
-    ) -> bool {
+    ) -> Option<Captures> {
         let X86FlagResult {
             which_flag,
             mnemonic,
@@ -628,7 +671,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
             // S = (math result < 0)
             X86Flag::SF => {
                 if matches!(mnemonic, Mnemonic::Sub | Mnemonic::Dec) {
-                    if self.match_compare_op(
+                    if let Some(captures) = self.match_compare_op(
                         pat_cond,
                         &CompareOp {
                             kind: CompareOpKind::LessThanSigned,
@@ -636,10 +679,10 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                             rhs,
                         },
                     ) {
-                        return true;
+                        return Some(captures);
                     }
                 } else {
-                    if self.match_compare_op(
+                    if let Some(captures) = self.match_compare_op(
                         pat_cond,
                         &CompareOp {
                             kind: CompareOpKind::LessThanSigned,
@@ -647,28 +690,27 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                             rhs: SimpleExpr::Const(0),
                         },
                     ) {
-                        return true;
+                        return Some(captures);
                     }
                 }
             }
 
             // Z = (math result = 0)
             X86Flag::ZF => {
-                if matches!(mnemonic, Mnemonic::Sub | Mnemonic::And)
-                    && lhs == rhs
-                    && self.match_compare_op(
+                if matches!(mnemonic, Mnemonic::Sub | Mnemonic::And) && lhs == rhs {
+                    if let Some(captures) = self.match_compare_op(
                         pat_cond,
                         &CompareOp {
                             kind: CompareOpKind::Equal,
                             lhs,
                             rhs: SimpleExpr::Const(0),
                         },
-                    )
-                {
-                    return true;
+                    ) {
+                        return Some(captures);
+                    }
                 }
 
-                if self.match_compare_op(
+                if let Some(captures) = self.match_compare_op(
                     pat_cond,
                     &CompareOp {
                         kind: CompareOpKind::Equal,
@@ -676,14 +718,14 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                         rhs: SimpleExpr::Const(0),
                     },
                 ) {
-                    return true;
+                    return Some(captures);
                 }
             }
 
             X86Flag::CF => match mnemonic {
                 // C of sub = LessThanUnsigned
                 Mnemonic::Sub | Mnemonic::Dec => {
-                    if self.match_compare_op(
+                    if let Some(captures) = self.match_compare_op(
                         pat_cond,
                         &CompareOp {
                             kind: CompareOpKind::LessThanUnsigned,
@@ -691,21 +733,25 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                             rhs,
                         },
                     ) {
-                        return true;
+                        return Some(captures);
                     }
                 }
 
                 // There's a carry in addition iff `result ltu lhs`, and also
                 // iff `result ltu rhs` (if I'm not mistaken).
                 Mnemonic::Add | Mnemonic::Inc => {
-                    if self.match_compare_op(
+                    if let Some(captures) = self.match_compare_op(
                         pat_cond,
                         &CompareOp {
                             kind: CompareOpKind::LessThanUnsigned,
                             lhs: math_result.into(),
                             rhs: lhs,
                         },
-                    ) || self.match_compare_op(
+                    ) {
+                        return Some(captures);
+                    }
+
+                    if let Some(captures) = self.match_compare_op(
                         pat_cond,
                         &CompareOp {
                             kind: CompareOpKind::LessThanUnsigned,
@@ -713,7 +759,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                             rhs,
                         },
                     ) {
-                        return true;
+                        return Some(captures);
                     }
                 }
 
@@ -730,14 +776,14 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
             X86Flag::OF => todo!("OF as condition @ {}", self.addr),
         }
 
-        false
+        None
     }
 
     fn match_complex_x86_flag_condition(
         &mut self,
         pat_cond: &ConditionExpr,
         cc: ComplexX86ConditionCode,
-    ) -> bool {
+    ) -> Option<Captures> {
         let Some((source_addr, source_flag_result, source_value_sources)) = self
             .get_complex_x86_flag_result(match cc {
                 ComplexX86ConditionCode::Be => &[X86Flag::CF, X86Flag::ZF],
@@ -746,7 +792,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
             })
         else {
             eprintln!("Failed to get flags for {:?} @ {}", cc, self.addr);
-            return false
+            return None
         };
 
         let X86FlagResult {
@@ -764,7 +810,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
             // BE = C or Z i.e. LessThanOrEqualUnsigned when C =
             // LessThanUnsigned
             (ComplexX86ConditionCode::Be, Mnemonic::Sub | Mnemonic::Dec) => {
-                if source_matcher.match_compare_op(
+                if let Some(captures) = source_matcher.match_compare_op(
                     pat_cond,
                     &CompareOp {
                         kind: CompareOpKind::LessThanOrEqualUnsigned,
@@ -772,7 +818,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                         rhs,
                     },
                 ) {
-                    return true;
+                    return Some(captures);
                 }
             }
 
@@ -792,7 +838,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
             }
 
             (ComplexX86ConditionCode::L, Mnemonic::Sub | Mnemonic::Dec) => {
-                if source_matcher.match_compare_op(
+                if let Some(captures) = source_matcher.match_compare_op(
                     pat_cond,
                     &CompareOp {
                         kind: CompareOpKind::LessThanSigned,
@@ -800,7 +846,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                         rhs,
                     },
                 ) {
-                    return true;
+                    return Some(captures);
                 }
             }
 
@@ -819,7 +865,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
             }
 
             (ComplexX86ConditionCode::Le, Mnemonic::Sub | Mnemonic::Dec) => {
-                if source_matcher.match_compare_op(
+                if let Some(captures) = source_matcher.match_compare_op(
                     pat_cond,
                     &CompareOp {
                         kind: CompareOpKind::LessThanOrEqualSigned,
@@ -827,13 +873,13 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                         rhs,
                     },
                 ) {
-                    return true;
+                    return Some(captures);
                 }
             }
 
             // LE is like L but OrEqual.
             (ComplexX86ConditionCode::Le, Mnemonic::And) if lhs == rhs => {
-                if source_matcher.match_compare_op(
+                if let Some(captures) = source_matcher.match_compare_op(
                     pat_cond,
                     &CompareOp {
                         kind: CompareOpKind::LessThanOrEqualSigned,
@@ -841,7 +887,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                         rhs: SimpleExpr::Const(0),
                     },
                 ) {
-                    return true;
+                    return Some(captures);
                 }
             }
 
@@ -853,7 +899,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
             }
         }
 
-        false
+        None
     }
 
     /// Calls `try_expand_var` for the given flags, and return one of the
@@ -933,7 +979,7 @@ impl<'db, 'view, 'query> ExprMatcher<'db, 'view, 'query> {
         value_sources: &ValueSources,
         pattern_expr: &Expr,
         ir_expr: &IrExpr,
-    ) -> bool {
+    ) -> Option<Captures> {
         ExprMatcherAt::new(addr, value_sources, self).match_expr(pattern_expr, ir_expr)
     }
 
@@ -943,11 +989,42 @@ impl<'db, 'view, 'query> ExprMatcher<'db, 'view, 'query> {
         value_sources: &ValueSources,
         pattern_expr: &Expr,
         ir_expr: &SimpleExpr,
-    ) -> bool {
+    ) -> Option<Captures> {
         ExprMatcherAt::new(addr, value_sources, self).match_simple_expr(pattern_expr, ir_expr)
     }
 
     pub fn database(&self) -> &'db Database {
         self.database
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct CaptureValue {
+    pub expr: IrExpr,
+    /// Address at which the expression is used, and at which the expression is
+    /// valid
+    pub at: StatementAddr,
+}
+
+pub type Captures = im_rc::HashMap<String, CaptureValue>;
+
+pub struct ExprMatch {
+    pub match_addr: StatementAddr,
+    pub captures: Captures,
+}
+
+fn empty_captures_if(did_match: bool) -> Option<Captures> {
+    if did_match {
+        Some(Captures::new())
+    } else {
+        None
+    }
+}
+
+fn match_two(
+    matcher: &mut ExprMatcherAt,
+    a: impl FnOnce(&mut ExprMatcherAt) -> Option<Captures>,
+    b: impl FnOnce(&mut ExprMatcherAt) -> Option<Captures>,
+) -> Option<Captures> {
+    Some(a(matcher)?.union(b(matcher)?))
 }
