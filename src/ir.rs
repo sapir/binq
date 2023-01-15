@@ -158,14 +158,14 @@ impl Display for SimpleExpr {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChangeWidthKind {
     Truncate,
     ZeroExtend,
     SignExtend,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChangeWidthOp {
     pub kind: ChangeWidthKind,
     pub new_size: SizeBits,
@@ -196,7 +196,7 @@ pub enum UnaryOpKind {
     Not,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnaryOp {
     pub op: UnaryOpKind,
     pub value: SimpleExpr,
@@ -225,7 +225,7 @@ pub enum BinaryOpKind {
     Xor,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BinaryOp {
     pub op: BinaryOpKind,
     pub lhs: SimpleExpr,
@@ -290,7 +290,7 @@ impl CompareOpKind {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompareOp {
     pub kind: CompareOpKind,
     pub lhs: SimpleExpr,
@@ -312,7 +312,7 @@ impl Display for CompareOp {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum X86Flag {
     /// Overflow Flag
     OF,
@@ -330,7 +330,7 @@ impl Display for X86Flag {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct X86FlagResult {
     pub which_flag: X86Flag,
     /// The mnemonic that generated this flag. If the original mnemonic was
@@ -374,7 +374,7 @@ impl Display for ComplexX86ConditionCode {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Expr {
     Unknown,
     Simple(SimpleExpr),

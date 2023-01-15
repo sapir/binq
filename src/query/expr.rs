@@ -1020,7 +1020,7 @@ impl<'db, 'view, 'query> ExprMatcher<'db, 'view, 'query> {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CaptureValue {
     pub expr: IrExpr,
     /// Address at which the expression is used, and at which the expression is
@@ -1030,15 +1030,18 @@ pub struct CaptureValue {
 
 pub type Captures = im_rc::HashMap<String, CaptureValue>;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExprMatch {
     pub match_addr: StatementAddr,
     pub captures: Captures,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BranchMatchData {
     pub captures: Captures,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BranchMatch {
     pub match_addr: StatementAddr,
     pub data: BranchMatchData,
