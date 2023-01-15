@@ -120,9 +120,9 @@ impl Drop for ExprMatcherAt<'_, '_, '_, '_> {
 }
 
 impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
-    fn add_capture(&self, captures: Captures, name: &String, ir_expr: IrExpr) -> Captures {
+    fn add_capture(&self, captures: Captures, name: &str, ir_expr: IrExpr) -> Captures {
         captures.update(
-            name.clone(),
+            name.to_owned(),
             CaptureValue {
                 expr: ir_expr,
                 at: self.addr,
@@ -257,7 +257,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
             (Expr::Any, _) => Some(Captures::new()),
 
             (Expr::Named { inner, name }, _) => self
-                .match_simple_expr(&inner, ir_expr)
+                .match_simple_expr(inner, ir_expr)
                 .map(|captures| self.add_capture(captures, name, (*ir_expr).into())),
 
             (_, SimpleExpr::Variable(ir_var)) => self.match_var(pattern_expr, *ir_var),
@@ -480,7 +480,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
             } => {
                 let mut lhs = self
                     .expand_to_const(&IrExpr::Simple(*lhs))
-                    .unwrap_or(PartiallyKnownConst::unknown());
+                    .unwrap_or_else(PartiallyKnownConst::unknown);
                 let rhs = self.expand_to_const(&IrExpr::Simple(*rhs))?;
 
                 lhs.value = insert_bits(lhs.value, *shift, *num_bits, rhs.value);
