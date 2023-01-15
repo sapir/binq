@@ -10,7 +10,7 @@ use crate::{
     database::{ArchAndAbi, Database},
     ir::{Addr64, CompareOpKind},
     print_il,
-    query::{search, ConditionExpr, Expr, ExprMatch, ExprMatchFilter, Field},
+    query::{search, search_branch, ConditionExpr, Expr, ExprMatch, ExprMatchFilter, Field},
 };
 
 const BASE_ADDR: Addr64 = 0x1000;
@@ -303,19 +303,24 @@ fn match_two_part_consts() {
 
 #[test]
 fn match_const_in_partial_reg_condition() {
-    assert_match_at!(
+    let mut db = assemble_to_db(
         ArchAndAbi::X64,
         "
         mov %rax, 1
         test %al, %al
         jne 0x1200
         ",
-        Field::Condition,
-        Expr::Condition(Box::new(ConditionExpr {
+    );
+
+    let matches = search_branch(
+        &mut db,
+        &ConditionExpr {
             kind: CompareOpKind::NotEqual,
             lhs: Expr::Const(1),
             rhs: Expr::Const(0),
-        })),
-        BASE_ADDR + 9
+        },
     );
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].match_addr.asm_addr, BASE_ADDR + 9);
+    assert!(matches[0].data.captures.is_empty());
 }

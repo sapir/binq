@@ -4,7 +4,7 @@ mod fields;
 use crate::{
     analysis::data_flow::ValueSources,
     database::{Database, StatementAddr},
-    ir::Statement,
+    ir::{Expr as IrExpr, Statement},
 };
 
 use self::{
@@ -13,7 +13,7 @@ use self::{
 };
 
 pub use self::{
-    expr::{CaptureValue, ConditionExpr, Expr, ExprMatch},
+    expr::{BranchMatch, BranchMatchData, CaptureValue, ConditionExpr, Expr, ExprMatch},
     fields::{ExprMatchFilter, Field},
 };
 
@@ -39,6 +39,37 @@ pub fn search(database: &mut Database, filters: &[ExprMatchFilter]) -> Vec<ExprM
             Some(ExprMatch {
                 match_addr: *addr,
                 captures,
+            })
+        })
+        .collect()
+}
+
+pub fn search_branch(database: &mut Database, pattern: &ConditionExpr) -> Vec<BranchMatch> {
+    let mut query = database.world.query::<(&Statement, &ValueSources)>();
+    let view = query.view();
+
+    let mut matcher = ExprMatcher::new(database, &view);
+
+    database
+        .world
+        .query::<(&StatementAddr, &Statement, &ValueSources)>()
+        .into_iter()
+        .filter_map(|(_entity, (addr, stmt, value_sources))| {
+            let Statement::Jump { condition, .. } = stmt
+            else { return None };
+
+            let condition = *condition.as_ref()?;
+
+            let branch_match = matcher.match_condition_pattern(
+                *addr,
+                value_sources,
+                pattern,
+                &IrExpr::Simple(condition),
+            )?;
+
+            Some(BranchMatch {
+                match_addr: *addr,
+                data: branch_match,
             })
         })
         .collect()

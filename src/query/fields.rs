@@ -32,7 +32,6 @@ pub enum Field {
     Value,
     StoreAddr,
     Target,
-    Condition,
     CallArg(usize),
 }
 
@@ -44,7 +43,6 @@ impl FromStr for Field {
             "value" => Ok(Self::Value),
             "store_addr" => Ok(Self::StoreAddr),
             "target" => Ok(Self::Target),
-            "condition" => Ok(Self::Condition),
             _ => Err(()),
         }
     }
@@ -75,14 +73,6 @@ fn get_field(arch_and_abi: ArchAndAbi, stmt: &Statement, field: Field) -> Option
         (Statement::Call { target } | Statement::Jump { target, .. }, Field::Target) => {
             Some(MaybeSimpleExpr::Simple(*target))
         }
-
-        (
-            Statement::Jump {
-                condition: Some(condition),
-                ..
-            },
-            Field::Condition,
-        ) => Some(MaybeSimpleExpr::Simple(*condition)),
 
         (Statement::Call { .. }, Field::CallArg(arg_index)) => match arch_and_abi {
             ArchAndAbi::X86 => todo!("x86 call arguments"),

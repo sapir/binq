@@ -21,7 +21,6 @@ pub enum Expr {
     Deref(Box<Expr>),
     Sum(Vec<Expr>),
     Product(Vec<Expr>),
-    Condition(Box<ConditionExpr>),
 }
 
 #[derive(Clone, Debug)]
@@ -208,8 +207,6 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                     }
                 }
             }
-
-            Expr::Condition(pat_cond) => self.match_condition_pattern(pat_cond, ir_expr),
         }
     }
 
@@ -217,7 +214,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
         &mut self,
         pat_cond: &ConditionExpr,
         ir_expr: &IrExpr,
-    ) -> Option<Captures> {
+    ) -> Option<BranchMatchData> {
         match ir_expr {
             IrExpr::Unknown
             | IrExpr::Deref { .. }
@@ -233,10 +230,11 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                 kind: _,
                 new_size: _,
                 inner: simple,
-            }) => {
-                // TODO: don't clone :(
-                let pattern_expr = Expr::Condition(Box::new(pat_cond.clone()));
-                self.match_simple_expr(&pattern_expr, simple)
+            }) => match simple {
+                // A constant value isn't a condition
+                SimpleExpr::Const(_) => None,
+
+                SimpleExpr::Variable(var) => self.match_cond_var(pat_cond, *var),
             }
 
             IrExpr::CompareOp(ir_op) => self.match_compare_op(pat_cond, ir_op),
@@ -270,7 +268,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                 empty_captures_if(self.match_const_numbers(*pat_x, *ir_x))
             }
 
-            (Expr::Deref(_) | Expr::Condition(_), SimpleExpr::Const(_)) => None,
+            (Expr::Deref(_), SimpleExpr::Const(_)) => None,
 
             (Expr::Sum(terms), ir_expr @ SimpleExpr::Const(_)) => {
                 if let [term] = &terms[..] {
@@ -350,6 +348,17 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
 
         ExprMatcherAt::new(source_addr, source_value_sources, self.matcher)
             .match_expr(pattern_expr, source_expr)
+    }
+
+    fn match_cond_var(
+        &mut self,
+        pattern_cond: &ConditionExpr,
+        ir_var: Variable,
+    ) -> Option<BranchMatchData> {
+        let (source_addr, source_expr, source_value_sources) = self.try_expand_var(ir_var)?;
+
+        ExprMatcherAt::new(source_addr, source_value_sources, self.matcher)
+            .match_condition_pattern(pattern_cond, source_expr)
     }
 
     fn get_inner_simple_expr<'b>(&mut self, expr: &'b IrExpr) -> Option<&'b SimpleExpr> {
@@ -506,19 +515,21 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
         &mut self,
         pat_cond: &ConditionExpr,
         ir_op: &CompareOp,
-    ) -> Option<Captures> {
+    ) -> Option<BranchMatchData> {
         fn match_direct(
             matcher: &mut ExprMatcherAt,
             pat_cond: &ConditionExpr,
             ir_op: &CompareOp,
-        ) -> Option<Captures> {
+        ) -> Option<BranchMatchData> {
             let unswapped_match = match_two(
                 matcher,
                 |matcher| matcher.match_simple_expr(&pat_cond.lhs, &ir_op.lhs),
                 |matcher| matcher.match_simple_expr(&pat_cond.rhs, &ir_op.rhs),
             );
-            if pat_cond.kind == ir_op.kind && unswapped_match.is_some() {
-                return unswapped_match;
+            if pat_cond.kind == ir_op.kind {
+                if let Some(captures) = unswapped_match {
+                    return Some(BranchMatchData { captures });
+                }
             }
 
             let swapped_match = match_two(
@@ -526,21 +537,22 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                 |matcher| matcher.match_simple_expr(&pat_cond.lhs, &ir_op.rhs),
                 |matcher| matcher.match_simple_expr(&pat_cond.rhs, &ir_op.lhs),
             );
-            if pat_cond.kind == ir_op.kind
-                && pat_cond.kind.is_symmetric()
-                && swapped_match.is_some()
-            {
-                return swapped_match;
+            if pat_cond.kind == ir_op.kind && pat_cond.kind.is_symmetric() {
+                if let Some(captures) = swapped_match {
+                    return Some(BranchMatchData { captures });
+                }
             }
 
             // TODO: Notify caller if we're actually returning the inverse / swapped
             if pat_cond.kind == ir_op.kind.swapped_inverse() {
-                if swapped_match.is_some() {
-                    return swapped_match;
+                if let Some(captures) = swapped_match {
+                    return Some(BranchMatchData { captures });
                 }
 
-                if pat_cond.kind.is_symmetric() && unswapped_match.is_some() {
-                    return unswapped_match;
+                if pat_cond.kind.is_symmetric() {
+                    if let Some(captures) = unswapped_match {
+                        return Some(BranchMatchData { captures });
+                    }
                 }
             }
 
@@ -551,9 +563,9 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
             matcher: &mut ExprMatcherAt,
             pat_cond: &ConditionExpr,
             ir_op: &CompareOp,
-        ) -> Option<Captures> {
-            if let Some(captures) = match_direct(matcher, pat_cond, ir_op) {
-                return Some(captures);
+        ) -> Option<BranchMatchData> {
+            if let Some(branch_match_data) = match_direct(matcher, pat_cond, ir_op) {
+                return Some(branch_match_data);
             }
 
             // Handle "off-by-one" comparisons (e.g. <= 0xf instead of < 0x10)
@@ -572,7 +584,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
             if let Some((kind, offset)) = offset_cmp_kind_and_value {
                 if let Expr::Const(rhs) = pat_cond.rhs {
                     // TODO: don't clone :(
-                    if let Some(captures) = match_direct(
+                    if let Some(branch_match_data) = match_direct(
                         matcher,
                         &ConditionExpr {
                             kind,
@@ -581,7 +593,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                         },
                         ir_op,
                     ) {
-                        return Some(captures);
+                        return Some(branch_match_data);
                     }
                 }
 
@@ -589,7 +601,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                 // `0x10 <= x`
                 if let Expr::Const(lhs) = pat_cond.lhs {
                     // TODO: don't clone :(
-                    if let Some(captures) = match_direct(
+                    if let Some(branch_match_data) = match_direct(
                         matcher,
                         &ConditionExpr {
                             kind,
@@ -598,7 +610,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                         },
                         ir_op,
                     ) {
-                        return Some(captures);
+                        return Some(branch_match_data);
                     }
                 }
             }
@@ -606,8 +618,8 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
             None
         }
 
-        if let Some(captures) = match_direct_or_off_by_one(self, pat_cond, ir_op) {
-            return Some(captures);
+        if let Some(branch_match_data) = match_direct_or_off_by_one(self, pat_cond, ir_op) {
+            return Some(branch_match_data);
         }
 
         // `0 les x && x lts y` with a constant y could be compiled to `x ltu
@@ -621,7 +633,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
         {
             if self.match_simple_expr(&Expr::AnyConst, ir_y).is_some() {
                 // Match `0 les x`
-                if let Some(captures) = self.match_compare_op(
+                if let Some(branch_match_data) = self.match_compare_op(
                     pat_cond,
                     &CompareOp {
                         kind: CompareOpKind::LessThanOrEqualSigned,
@@ -629,7 +641,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                         rhs: *ir_x,
                     },
                 ) {
-                    return Some(captures);
+                    return Some(branch_match_data);
                 }
 
                 // Match `x lts/les y`
@@ -638,7 +650,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                     CompareOpKind::LessThanOrEqualUnsigned => CompareOpKind::LessThanOrEqualSigned,
                     _ => unreachable!(),
                 };
-                if let Some(captures) = self.match_compare_op(
+                if let Some(branch_match_data) = self.match_compare_op(
                     pat_cond,
                     &CompareOp {
                         kind: signed_op_for_y,
@@ -646,7 +658,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                         rhs: *ir_y,
                     },
                 ) {
-                    return Some(captures);
+                    return Some(branch_match_data);
                 }
             }
         }
@@ -658,7 +670,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
         &mut self,
         pat_cond: &ConditionExpr,
         x86_flag_info: &X86FlagResult,
-    ) -> Option<Captures> {
+    ) -> Option<BranchMatchData> {
         let X86FlagResult {
             which_flag,
             mnemonic,
@@ -671,7 +683,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
             // S = (math result < 0)
             X86Flag::SF => {
                 if matches!(mnemonic, Mnemonic::Sub | Mnemonic::Dec) {
-                    if let Some(captures) = self.match_compare_op(
+                    if let Some(branch_match_data) = self.match_compare_op(
                         pat_cond,
                         &CompareOp {
                             kind: CompareOpKind::LessThanSigned,
@@ -679,10 +691,10 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                             rhs,
                         },
                     ) {
-                        return Some(captures);
+                        return Some(branch_match_data);
                     }
                 } else {
-                    if let Some(captures) = self.match_compare_op(
+                    if let Some(branch_match_data) = self.match_compare_op(
                         pat_cond,
                         &CompareOp {
                             kind: CompareOpKind::LessThanSigned,
@@ -690,7 +702,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                             rhs: SimpleExpr::Const(0),
                         },
                     ) {
-                        return Some(captures);
+                        return Some(branch_match_data);
                     }
                 }
             }
@@ -698,7 +710,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
             // Z = (math result = 0)
             X86Flag::ZF => {
                 if matches!(mnemonic, Mnemonic::Sub | Mnemonic::And) && lhs == rhs {
-                    if let Some(captures) = self.match_compare_op(
+                    if let Some(branch_match_data) = self.match_compare_op(
                         pat_cond,
                         &CompareOp {
                             kind: CompareOpKind::Equal,
@@ -706,11 +718,11 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                             rhs: SimpleExpr::Const(0),
                         },
                     ) {
-                        return Some(captures);
+                        return Some(branch_match_data);
                     }
                 }
 
-                if let Some(captures) = self.match_compare_op(
+                if let Some(branch_match_data) = self.match_compare_op(
                     pat_cond,
                     &CompareOp {
                         kind: CompareOpKind::Equal,
@@ -718,14 +730,14 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                         rhs: SimpleExpr::Const(0),
                     },
                 ) {
-                    return Some(captures);
+                    return Some(branch_match_data);
                 }
             }
 
             X86Flag::CF => match mnemonic {
                 // C of sub = LessThanUnsigned
                 Mnemonic::Sub | Mnemonic::Dec => {
-                    if let Some(captures) = self.match_compare_op(
+                    if let Some(branch_match_data) = self.match_compare_op(
                         pat_cond,
                         &CompareOp {
                             kind: CompareOpKind::LessThanUnsigned,
@@ -733,14 +745,14 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                             rhs,
                         },
                     ) {
-                        return Some(captures);
+                        return Some(branch_match_data);
                     }
                 }
 
                 // There's a carry in addition iff `result ltu lhs`, and also
                 // iff `result ltu rhs` (if I'm not mistaken).
                 Mnemonic::Add | Mnemonic::Inc => {
-                    if let Some(captures) = self.match_compare_op(
+                    if let Some(branch_match_data) = self.match_compare_op(
                         pat_cond,
                         &CompareOp {
                             kind: CompareOpKind::LessThanUnsigned,
@@ -748,10 +760,10 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                             rhs: lhs,
                         },
                     ) {
-                        return Some(captures);
+                        return Some(branch_match_data);
                     }
 
-                    if let Some(captures) = self.match_compare_op(
+                    if let Some(branch_match_data) = self.match_compare_op(
                         pat_cond,
                         &CompareOp {
                             kind: CompareOpKind::LessThanUnsigned,
@@ -759,7 +771,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                             rhs,
                         },
                     ) {
-                        return Some(captures);
+                        return Some(branch_match_data);
                     }
                 }
 
@@ -783,7 +795,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
         &mut self,
         pat_cond: &ConditionExpr,
         cc: ComplexX86ConditionCode,
-    ) -> Option<Captures> {
+    ) -> Option<BranchMatchData> {
         let Some((source_addr, source_flag_result, source_value_sources)) = self
             .get_complex_x86_flag_result(match cc {
                 ComplexX86ConditionCode::Be => &[X86Flag::CF, X86Flag::ZF],
@@ -810,7 +822,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
             // BE = C or Z i.e. LessThanOrEqualUnsigned when C =
             // LessThanUnsigned
             (ComplexX86ConditionCode::Be, Mnemonic::Sub | Mnemonic::Dec) => {
-                if let Some(captures) = source_matcher.match_compare_op(
+                if let Some(branch_match_data) = source_matcher.match_compare_op(
                     pat_cond,
                     &CompareOp {
                         kind: CompareOpKind::LessThanOrEqualUnsigned,
@@ -818,7 +830,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                         rhs,
                     },
                 ) {
-                    return Some(captures);
+                    return Some(branch_match_data);
                 }
             }
 
@@ -838,7 +850,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
             }
 
             (ComplexX86ConditionCode::L, Mnemonic::Sub | Mnemonic::Dec) => {
-                if let Some(captures) = source_matcher.match_compare_op(
+                if let Some(branch_match_data) = source_matcher.match_compare_op(
                     pat_cond,
                     &CompareOp {
                         kind: CompareOpKind::LessThanSigned,
@@ -846,7 +858,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                         rhs,
                     },
                 ) {
-                    return Some(captures);
+                    return Some(branch_match_data);
                 }
             }
 
@@ -865,7 +877,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
             }
 
             (ComplexX86ConditionCode::Le, Mnemonic::Sub | Mnemonic::Dec) => {
-                if let Some(captures) = source_matcher.match_compare_op(
+                if let Some(branch_match_data) = source_matcher.match_compare_op(
                     pat_cond,
                     &CompareOp {
                         kind: CompareOpKind::LessThanOrEqualSigned,
@@ -873,13 +885,13 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                         rhs,
                     },
                 ) {
-                    return Some(captures);
+                    return Some(branch_match_data);
                 }
             }
 
             // LE is like L but OrEqual.
             (ComplexX86ConditionCode::Le, Mnemonic::And) if lhs == rhs => {
-                if let Some(captures) = source_matcher.match_compare_op(
+                if let Some(branch_match_data) = source_matcher.match_compare_op(
                     pat_cond,
                     &CompareOp {
                         kind: CompareOpKind::LessThanOrEqualSigned,
@@ -887,7 +899,7 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
                         rhs: SimpleExpr::Const(0),
                     },
                 ) {
-                    return Some(captures);
+                    return Some(branch_match_data);
                 }
             }
 
@@ -993,6 +1005,16 @@ impl<'db, 'view, 'query> ExprMatcher<'db, 'view, 'query> {
         ExprMatcherAt::new(addr, value_sources, self).match_simple_expr(pattern_expr, ir_expr)
     }
 
+    pub fn match_condition_pattern(
+        &mut self,
+        addr: StatementAddr,
+        value_sources: &ValueSources,
+        pattern_cond: &ConditionExpr,
+        ir_expr: &IrExpr,
+    ) -> Option<BranchMatchData> {
+        ExprMatcherAt::new(addr, value_sources, self).match_condition_pattern(pattern_cond, ir_expr)
+    }
+
     pub fn database(&self) -> &'db Database {
         self.database
     }
@@ -1011,6 +1033,15 @@ pub type Captures = im_rc::HashMap<String, CaptureValue>;
 pub struct ExprMatch {
     pub match_addr: StatementAddr,
     pub captures: Captures,
+}
+
+pub struct BranchMatchData {
+    pub captures: Captures,
+}
+
+pub struct BranchMatch {
+    pub match_addr: StatementAddr,
+    pub data: BranchMatchData,
 }
 
 fn empty_captures_if(did_match: bool) -> Option<Captures> {
