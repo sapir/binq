@@ -10,7 +10,10 @@ use crate::{
     database::{ArchAndAbi, Database},
     ir::{Addr64, CompareOpKind},
     print_il,
-    query::{search, search_branch, ConditionExpr, Expr, ExprMatch, ExprMatchFilter, Field},
+    query::{
+        search, search_branch, BranchMatchKind, ConditionExpr, Expr, ExprMatch, ExprMatchFilter,
+        Field,
+    },
 };
 
 const BASE_ADDR: Addr64 = 0x1000;
@@ -37,9 +40,9 @@ fn assemble(bitness: u32, code: &str) -> Vec<u8> {
                 concat!(
                     ".intel_syntax\n",
                     ".text\n",
-                    ".global main\n",
-                    ".type main, @function\n",
-                    "main:\n",
+                    ".global _start\n",
+                    ".type _start, @function\n",
+                    "_start:\n",
                 )
                 .as_bytes(),
             )
@@ -55,8 +58,11 @@ fn assemble(bitness: u32, code: &str) -> Vec<u8> {
         .arg(format!("-m{bitness}"))
         .arg("-x")
         .arg("assembler")
-        .arg("-c")
         .arg(src_file.path())
+        .arg(format!("-Wl,-Ttext={:#x}", BASE_ADDR))
+        .arg("-nostartfiles")
+        .arg("-nodefaultlibs")
+        .arg("-static")
         .arg("-o")
         .arg(obj_file.path()));
 
@@ -95,6 +101,28 @@ fn assemble_works() {
             "
         ),
         b"\x48\xc7\xc0\x64\x00\x00\x00\xc3"
+    );
+
+    // Check relative branch addresses
+    assert_eq!(
+        assemble(
+            32,
+            "
+            jmp 0x1000
+            je 0x1200
+            "
+        ),
+        b"\xe9\xfb\xff\xff\xff\x0f\x84\xf5\x01\x00\x00",
+    );
+    assert_eq!(
+        assemble(
+            64,
+            "
+            jmp 0x1000
+            je 0x1200
+            "
+        ),
+        b"\xe9\xfb\xff\xff\xff\x0f\x84\xf5\x01\x00\x00",
     );
 }
 
@@ -322,5 +350,8 @@ fn match_const_in_partial_reg_condition() {
     );
     assert_eq!(matches.len(), 1);
     assert_eq!(matches[0].match_addr.asm_addr, BASE_ADDR + 9);
-    assert!(matches[0].data.captures.is_empty());
+    assert!(matches[0].captures.is_empty());
+    assert_eq!(matches[0].branch_match_kind, BranchMatchKind::JumpIfTrue);
+    assert_eq!(matches[0].true_addr.unwrap().asm_addr, 0x1200);
+    assert_eq!(matches[0].false_addr.unwrap().asm_addr, BASE_ADDR + 0xf);
 }

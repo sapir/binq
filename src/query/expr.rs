@@ -528,7 +528,10 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
             );
             if pat_cond.kind == ir_op.kind {
                 if let Some(captures) = unswapped_match {
-                    return Some(BranchMatchData { captures });
+                    return Some(BranchMatchData {
+                        captures,
+                        branch_match_kind: BranchMatchKind::JumpIfTrue,
+                    });
                 }
             }
 
@@ -539,19 +542,27 @@ impl<'db, 'view, 'query, 'a> ExprMatcherAt<'db, 'view, 'query, 'a> {
             );
             if pat_cond.kind == ir_op.kind && pat_cond.kind.is_symmetric() {
                 if let Some(captures) = swapped_match {
-                    return Some(BranchMatchData { captures });
+                    return Some(BranchMatchData {
+                        captures,
+                        branch_match_kind: BranchMatchKind::JumpIfTrue,
+                    });
                 }
             }
 
-            // TODO: Notify caller if we're actually returning the inverse / swapped
             if pat_cond.kind == ir_op.kind.swapped_inverse() {
                 if let Some(captures) = swapped_match {
-                    return Some(BranchMatchData { captures });
+                    return Some(BranchMatchData {
+                        captures,
+                        branch_match_kind: BranchMatchKind::JumpIfFalse,
+                    });
                 }
 
                 if pat_cond.kind.is_symmetric() {
                     if let Some(captures) = unswapped_match {
-                        return Some(BranchMatchData { captures });
+                        return Some(BranchMatchData {
+                            captures,
+                            branch_match_kind: BranchMatchKind::JumpIfFalse,
+                        });
                     }
                 }
             }
@@ -1036,15 +1047,25 @@ pub struct ExprMatch {
     pub captures: Captures,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BranchMatchKind {
+    JumpIfTrue,
+    JumpIfFalse,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BranchMatchData {
+pub(super) struct BranchMatchData {
     pub captures: Captures,
+    pub branch_match_kind: BranchMatchKind,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BranchMatch {
     pub match_addr: StatementAddr,
-    pub data: BranchMatchData,
+    pub captures: Captures,
+    pub branch_match_kind: BranchMatchKind,
+    pub true_addr: Option<StatementAddr>,
+    pub false_addr: Option<StatementAddr>,
 }
 
 fn empty_captures_if(did_match: bool) -> Option<Captures> {

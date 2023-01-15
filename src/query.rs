@@ -2,18 +2,21 @@ mod expr;
 mod fields;
 
 use crate::{
-    analysis::data_flow::ValueSources,
+    analysis::{
+        code_flow::{CodeFlowKind, OutCodeFlowEdges},
+        data_flow::ValueSources,
+    },
     database::{Database, StatementAddr},
     ir::{Expr as IrExpr, Statement},
 };
 
 use self::{
-    expr::{Captures, ExprMatcher},
+    expr::{BranchMatchData, ExprMatcher},
     fields::match_expr_filter,
 };
 
 pub use self::{
-    expr::{BranchMatch, BranchMatchData, CaptureValue, ConditionExpr, Expr, ExprMatch},
+    expr::{BranchMatch, BranchMatchKind, CaptureValue, Captures, ConditionExpr, Expr, ExprMatch},
     fields::{ExprMatchFilter, Field},
 };
 
@@ -52,9 +55,14 @@ pub fn search_branch(database: &mut Database, pattern: &ConditionExpr) -> Vec<Br
 
     database
         .world
-        .query::<(&StatementAddr, &Statement, &ValueSources)>()
+        .query::<(
+            &StatementAddr,
+            &Statement,
+            &ValueSources,
+            &OutCodeFlowEdges<StatementAddr>,
+        )>()
         .into_iter()
-        .filter_map(|(_entity, (addr, stmt, value_sources))| {
+        .filter_map(|(_entity, (addr, stmt, value_sources, out_edges))| {
             let Statement::Jump { condition, .. } = stmt
             else { return None };
 
@@ -67,9 +75,35 @@ pub fn search_branch(database: &mut Database, pattern: &ConditionExpr) -> Vec<Br
                 &IrExpr::Simple(condition),
             )?;
 
+            let BranchMatchData {
+                captures,
+                branch_match_kind,
+            } = branch_match;
+
+            let mut true_addr = out_edges
+                .0
+                .iter()
+                .find(|edge| edge.kind == CodeFlowKind::BranchTrue)
+                .and_then(|edge| edge.to);
+            let mut false_addr = out_edges
+                .0
+                .iter()
+                .find(|edge| edge.kind == CodeFlowKind::BranchFalse)
+                .and_then(|edge| edge.to);
+
+            // JumpIfFalse means the pattern condition is inverted relative to
+            // the branch condition, so the branch's true is the pattern's false
+            // and vice versa.
+            if branch_match_kind == BranchMatchKind::JumpIfFalse {
+                std::mem::swap(&mut true_addr, &mut false_addr);
+            }
+
             Some(BranchMatch {
                 match_addr: *addr,
-                data: branch_match,
+                captures,
+                branch_match_kind,
+                true_addr,
+                false_addr,
             })
         })
         .collect()

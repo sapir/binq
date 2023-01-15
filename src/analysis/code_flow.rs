@@ -8,7 +8,7 @@ use crate::{
     utils::insert_default_bundles,
 };
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CodeFlowKind {
     NextInsn,
     Jump,
@@ -27,6 +27,7 @@ pub struct CodeFlowEdge<AddrType> {
     pub is_conditional: bool,
 }
 
+#[derive(Debug)]
 pub struct InCodeFlowEdges<AddrType>(pub Vec<CodeFlowEdge<AddrType>>);
 
 impl<AddrType> Default for InCodeFlowEdges<AddrType> {
@@ -35,6 +36,7 @@ impl<AddrType> Default for InCodeFlowEdges<AddrType> {
     }
 }
 
+#[derive(Debug)]
 pub struct OutCodeFlowEdges<AddrType>(pub Vec<CodeFlowEdge<AddrType>>);
 
 impl<AddrType> Default for OutCodeFlowEdges<AddrType> {

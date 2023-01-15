@@ -21,7 +21,10 @@ use pyo3::{
     prelude::*,
     types::{PyDict, PyLong},
 };
-use query::{search, CaptureValue, Expr, ExprMatch, ExprMatchFilter, Field};
+use query::{
+    search, search_branch, BranchMatch, BranchMatchKind, CaptureValue, Captures, Expr, ExprMatch,
+    ExprMatchFilter, Field,
+};
 
 use self::{
     database::Database,
@@ -234,16 +237,40 @@ impl PyDatabase {
                  }| {
                     let d = PyDict::new(py);
                     d.set_item("match_addr", (match_addr.asm_addr, match_addr.ir_index))?;
-                    for (k, CaptureValue { expr, at }) in captures {
-                        let v = match expr {
-                            ir::Expr::Simple(ir::SimpleExpr::Const(x)) => x.to_object(py),
-                            _ => expr.to_string().to_object(py),
-                        };
-                        let v_d = PyDict::new(py);
-                        v_d.set_item("value", v)?;
-                        v_d.set_item("at", (at.asm_addr, at.ir_index))?;
-                        d.set_item(k, v_d)?;
-                    }
+                    add_captures_to_python(py, d, captures)?;
+                    Ok(d)
+                },
+            )
+            .collect()
+    }
+
+    fn search_branch<'py>(
+        &mut self,
+        py: Python<'py>,
+        pattern: &PyConditionExpr,
+    ) -> PyResult<Vec<&'py PyDict>> {
+        search_branch(&mut self.0, &pattern.0)
+            .into_iter()
+            .map(
+                |BranchMatch {
+                     match_addr,
+                     captures,
+                     branch_match_kind,
+                     true_addr,
+                     false_addr,
+                 }| {
+                    let d = PyDict::new(py);
+                    d.set_item("match_addr", addr_to_python(match_addr))?;
+                    d.set_item(
+                        "branch_if",
+                        match branch_match_kind {
+                            BranchMatchKind::JumpIfTrue => true,
+                            BranchMatchKind::JumpIfFalse => false,
+                        },
+                    )?;
+                    d.set_item("true_addr", true_addr.map(addr_to_python))?;
+                    d.set_item("false_addr", false_addr.map(addr_to_python))?;
+                    add_captures_to_python(py, d, captures)?;
                     Ok(d)
                 },
             )
@@ -253,6 +280,24 @@ impl PyDatabase {
     fn print_il(&mut self) {
         print_il(&mut self.0);
     }
+}
+
+fn addr_to_python(addr: StatementAddr) -> (Addr64, usize) {
+    (addr.asm_addr, addr.ir_index)
+}
+
+fn add_captures_to_python(py: Python, py_dict: &PyDict, captures: Captures) -> PyResult<()> {
+    for (k, CaptureValue { expr, at }) in captures {
+        let v = match expr {
+            ir::Expr::Simple(ir::SimpleExpr::Const(x)) => x.to_object(py),
+            _ => expr.to_string().to_object(py),
+        };
+        let v_d = PyDict::new(py);
+        v_d.set_item("value", v)?;
+        v_d.set_item("at", (at.asm_addr, at.ir_index))?;
+        py_dict.set_item(k, v_d)?;
+    }
+    Ok(())
 }
 
 fn print_il(database: &mut Database) {
